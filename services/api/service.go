@@ -237,6 +237,8 @@ type RelayAPI struct {
 	ffEnableCancellations        bool // whether to enable block builder cancellations
 	ffRegValContinueOnInvalidSig bool // whether to continue processing further validators if one fails
 	ffIgnorableValidationErrors  bool // whether to enable ignorable validation errors
+	ffOptimisticAllSlots         bool // accept optimistically regardless of the slot==optimisticSlot gate
+	ffDisableDemotion            bool // never demote a builder (skip the demotion and its DB write)
 
 	payloadAttributes     map[string]payloadAttributesHelper // key:parentBlockHash
 	payloadAttributesLock sync.RWMutex
@@ -354,6 +356,16 @@ func NewRelayAPI(opts RelayAPIOpts) (api *RelayAPI, err error) {
 	if os.Getenv("ENABLE_IGNORABLE_VALIDATION_ERRORS") == "1" {
 		api.log.Warn("env: ENABLE_IGNORABLE_VALIDATION_ERRORS - some validation errors will be ignored")
 		api.ffIgnorableValidationErrors = true
+	}
+
+	if os.Getenv("ENABLE_OPTIMISTIC_ALL_SLOTS") == "1" {
+		api.log.Warn("env: ENABLE_OPTIMISTIC_ALL_SLOTS - optimistic processing bypasses the slot==optimisticSlot gate")
+		api.ffOptimisticAllSlots = true
+	}
+
+	if os.Getenv("DISABLE_BUILDER_DEMOTION") == "1" {
+		api.log.Warn("env: DISABLE_BUILDER_DEMOTION - builders are never demoted")
+		api.ffDisableDemotion = true
 	}
 
 	return api, nil
@@ -682,6 +694,9 @@ func (api *RelayAPI) simulateBlock(ctx context.Context, opts blockSimOptions) (b
 }
 
 func (api *RelayAPI) demoteBuilder(pubkey string, req *common.VersionedSubmitBlockRequest, simError error) {
+	if api.ffDisableDemotion {
+		return // never demote: skips the status flip and its postgres write
+	}
 	metrics.BuilderDemotionCount.Add(
 		context.Background(),
 		1,
@@ -2542,10 +2557,13 @@ func (api *RelayAPI) handleSubmitNewBlock(w http.ResponseWriter, req *http.Reque
 			ParentBeaconBlockRoot:       attrs.parentBeaconRoot,
 		},
 	}
-	// With sufficient collateral, process the block optimistically.
+	// With sufficient collateral, process the block optimistically. The slot gate
+	// (submission slot must equal the relay's optimisticSlot) is bypassed when
+	// ENABLE_OPTIMISTIC_ALL_SLOTS is set, so submissions still take the optimistic
+	// path at high rates where they would otherwise arrive slot-stale.
 	optimistic := builderEntry.status.IsOptimistic &&
 		builderEntry.collateral.Cmp(submission.BidTrace.Value.ToBig()) >= 0 &&
-		submission.BidTrace.Slot == api.optimisticSlot.Load()
+		(api.ffOptimisticAllSlots || submission.BidTrace.Slot == api.optimisticSlot.Load())
 	pf.Optimistic = optimistic
 	if optimistic {
 		go api.processOptimisticBlock(opts, simResultC)
