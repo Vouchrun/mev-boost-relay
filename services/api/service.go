@@ -2557,13 +2557,15 @@ func (api *RelayAPI) handleSubmitNewBlock(w http.ResponseWriter, req *http.Reque
 			ParentBeaconBlockRoot:       attrs.parentBeaconRoot,
 		},
 	}
-	// With sufficient collateral, process the block optimistically. The slot gate
-	// (submission slot must equal the relay's optimisticSlot) is bypassed when
-	// ENABLE_OPTIMISTIC_ALL_SLOTS is set, so submissions still take the optimistic
-	// path at high rates where they would otherwise arrive slot-stale.
-	optimistic := builderEntry.status.IsOptimistic &&
-		builderEntry.collateral.Cmp(submission.BidTrace.Value.ToBig()) >= 0 &&
-		(api.ffOptimisticAllSlots || submission.BidTrace.Slot == api.optimisticSlot.Load())
+	// With sufficient collateral, process the block optimistically. When
+	// ENABLE_OPTIMISTIC_ALL_SLOTS is set, force the optimistic path unconditionally —
+	// bypassing the builder-status, collateral, and slot-gate checks — so every
+	// submission is optimistic from the very first one, with no pessimistic warmup
+	// while a builder's optimistic status and collateral propagate into the cache.
+	optimistic := api.ffOptimisticAllSlots ||
+		(builderEntry.status.IsOptimistic &&
+			builderEntry.collateral.Cmp(submission.BidTrace.Value.ToBig()) >= 0 &&
+			submission.BidTrace.Slot == api.optimisticSlot.Load())
 	pf.Optimistic = optimistic
 	if optimistic {
 		go api.processOptimisticBlock(opts, simResultC)
