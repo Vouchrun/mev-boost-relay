@@ -2241,6 +2241,11 @@ func (api *RelayAPI) getForkFromSlot(slot uint64) spec.DataVersion {
 
 func (api *RelayAPI) handleSubmitNewBlock(w http.ResponseWriter, req *http.Request) {
 	var pf common.Profile
+	// Under ENABLE_OPTIMISTIC_ALL_SLOTS every submission is processed optimistically,
+	// so label it optimistic from the very start — otherwise submissions that exit
+	// early (rejects, before the optimistic decision below) keep the default false
+	// and show up as optimistic="false" in the metrics.
+	pf.Optimistic = api.ffOptimisticAllSlots
 	var prevTime, nextTime time.Time
 
 	headSlot := api.headSlot.Load()
