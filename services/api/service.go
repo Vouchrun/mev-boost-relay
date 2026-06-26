@@ -1354,6 +1354,14 @@ func (api *RelayAPI) handleGetHeader(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// The bid was stored UNSIGNED at submission time; sign it now so the BLS signature runs
+	// once, on the bid we actually serve, instead of on every submitBlock.
+	if err := common.SignGetHeaderResponse(bid, api.blsSk, api.opts.EthNetDetails.DomainBuilder); err != nil {
+		log.WithError(err).Error("could not sign bid")
+		api.RespondError(w, http.StatusInternalServerError, "could not sign bid")
+		return
+	}
+
 	log.WithFields(logrus.Fields{
 		"value":     value.String(),
 		"blockHash": blockHash.String(),
@@ -2182,7 +2190,10 @@ type redisUpdateBidOpts struct {
 
 func (api *RelayAPI) updateRedisBid(opts redisUpdateBidOpts) (*datastore.SaveBidAndUpdateTopBidResponse, *builderApi.VersionedSubmitBlindedBlockResponse, bool) {
 	// Prepare the response data
-	getHeaderResponse, err := common.BuildGetHeaderResponse(opts.payload, api.blsSk, api.publicKey, api.opts.EthNetDetails.DomainBuilder)
+	// Build the bid UNSIGNED (nil sk): the BLS signature is deferred to the getHeader
+	// handler (common.SignGetHeaderResponse), so it runs once on the served bid instead of
+	// on every submitBlock.
+	getHeaderResponse, err := common.BuildGetHeaderResponse(opts.payload, nil, api.publicKey, api.opts.EthNetDetails.DomainBuilder)
 	if err != nil {
 		opts.log.WithError(err).Error("could not sign builder bid")
 		api.RespondError(opts.w, http.StatusBadRequest, err.Error())

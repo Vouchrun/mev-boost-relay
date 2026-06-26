@@ -48,9 +48,9 @@ func BuildGetHeaderResponse(payload *VersionedSubmitBlockRequest, sk *bls.Secret
 		return nil, ErrMissingRequest
 	}
 
-	if sk == nil {
-		return nil, ErrMissingSecretKey
-	}
+	// A nil sk intentionally builds an UNSIGNED bid (zero signature). The relay signs the
+	// bid lazily in the getHeader handler (SignGetHeaderResponse) so the BLS signature runs
+	// once, on the winning bid, instead of on every submitBlock. See signOrEmpty.
 
 	versionedPayload := &builderApi.VersionedExecutionPayload{Version: payload.Version}
 	switch payload.Version {
@@ -156,6 +156,57 @@ func BuildGetPayloadResponse(payload *VersionedSubmitBlockRequest) (*builderApi.
 	return nil, ErrEmptyPayload
 }
 
+// signOrEmpty signs obj with the builder domain, or returns a zero signature when sk is
+// nil. A nil sk is how submission builds an unsigned bid and defers the (expensive) BLS
+// signature to getHeader, where only the winning bid is signed. See SignGetHeaderResponse.
+//
+// Even with a nil sk we still compute the hash-tree-root so a malformed bid (e.g. over-long
+// extra data) is rejected at submission rather than stored and 500-ing at getHeader. The
+// root is cheap and tx-count-independent (the bid carries only the transactions_root); only
+// the BLS sign — the part actually worth deferring — is skipped.
+func signOrEmpty(obj ssz.ObjWithHashTreeRoot, domain phase0.Domain, sk *bls.SecretKey) (phase0.BLSSignature, error) {
+	if sk == nil {
+		_, err := obj.HashTreeRoot()
+		return phase0.BLSSignature{}, err
+	}
+	return ssz.SignMessage(obj, domain, sk)
+}
+
+// SignGetHeaderResponse fills in the relay signature on a bid that was built unsigned at
+// submission time (sk == nil in BuildGetHeaderResponse). getHeader calls this so the BLS
+// signature runs once per slot, on the served bid, instead of on every submitBlock.
+func SignGetHeaderResponse(resp *builderSpec.VersionedSignedBuilderBid, sk *bls.SecretKey, domain phase0.Domain) error {
+	switch resp.Version {
+	case spec.DataVersionCapella:
+		sig, err := ssz.SignMessage(resp.Capella.Message, domain, sk)
+		if err != nil {
+			return err
+		}
+		resp.Capella.Signature = sig
+	case spec.DataVersionDeneb:
+		sig, err := ssz.SignMessage(resp.Deneb.Message, domain, sk)
+		if err != nil {
+			return err
+		}
+		resp.Deneb.Signature = sig
+	case spec.DataVersionElectra:
+		sig, err := ssz.SignMessage(resp.Electra.Message, domain, sk)
+		if err != nil {
+			return err
+		}
+		resp.Electra.Signature = sig
+	case spec.DataVersionFulu:
+		sig, err := ssz.SignMessage(resp.Fulu.Message, domain, sk)
+		if err != nil {
+			return err
+		}
+		resp.Fulu.Signature = sig
+	default:
+		return errors.Wrap(ErrInvalidVersion, fmt.Sprintf("%s is not supported", resp.Version))
+	}
+	return nil
+}
+
 func BuilderBlockRequestToSignedBuilderBid(payload *VersionedSubmitBlockRequest, header *builderApi.VersionedExecutionPayloadHeader, sk *bls.SecretKey, pubkey *phase0.BLSPubKey, domain phase0.Domain) (*builderSpec.VersionedSignedBuilderBid, error) {
 	value, err := payload.Value()
 	if err != nil {
@@ -170,7 +221,7 @@ func BuilderBlockRequestToSignedBuilderBid(payload *VersionedSubmitBlockRequest,
 			Pubkey: *pubkey,
 		}
 
-		sig, err := ssz.SignMessage(&builderBid, domain, sk)
+		sig, err := signOrEmpty(&builderBid, domain, sk)
 		if err != nil {
 			return nil, err
 		}
@@ -190,7 +241,7 @@ func BuilderBlockRequestToSignedBuilderBid(payload *VersionedSubmitBlockRequest,
 			Pubkey:             *pubkey,
 		}
 
-		sig, err := ssz.SignMessage(&builderBid, domain, sk)
+		sig, err := signOrEmpty(&builderBid, domain, sk)
 		if err != nil {
 			return nil, err
 		}
@@ -211,7 +262,7 @@ func BuilderBlockRequestToSignedBuilderBid(payload *VersionedSubmitBlockRequest,
 			Pubkey:             *pubkey,
 		}
 
-		sig, err := ssz.SignMessage(&builderBid, domain, sk)
+		sig, err := signOrEmpty(&builderBid, domain, sk)
 		if err != nil {
 			return nil, err
 		}
@@ -233,7 +284,7 @@ func BuilderBlockRequestToSignedBuilderBid(payload *VersionedSubmitBlockRequest,
 			Pubkey:             *pubkey,
 		}
 
-		sig, err := ssz.SignMessage(&builderBid, domain, sk)
+		sig, err := signOrEmpty(&builderBid, domain, sk)
 		if err != nil {
 			return nil, err
 		}
