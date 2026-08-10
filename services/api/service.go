@@ -173,6 +173,10 @@ type RelayAPIOpts struct {
 	BlockBuilderAPI bool
 	DataAPI         bool
 	InternalAPI     bool
+
+	// InitialKnownValidators seeds the known-validators cache at startup so the
+	// relay accepts registrations before the first beacon-driven refresh.
+	InitialKnownValidators []string
 }
 
 type payloadAttributesHelper struct {
@@ -254,6 +258,8 @@ type RelayAPI struct {
 	ffEnableCancellations        bool // whether to enable block builder cancellations
 	ffRegValContinueOnInvalidSig bool // whether to continue processing further validators if one fails
 	ffIgnorableValidationErrors  bool // whether to enable ignorable validation errors
+	ffOptimisticAllSlots         bool // accept optimistically regardless of the slot==optimisticSlot gate
+	ffDisableDemotion            bool // never demote a builder (skip the demotion and its DB write)
 
 	payloadAttributes     map[string]payloadAttributesHelper // key:parentBlockHash
 	payloadAttributesLock sync.RWMutex
@@ -371,6 +377,16 @@ func NewRelayAPI(opts RelayAPIOpts) (api *RelayAPI, err error) {
 	if os.Getenv("ENABLE_IGNORABLE_VALIDATION_ERRORS") == "1" {
 		api.log.Warn("env: ENABLE_IGNORABLE_VALIDATION_ERRORS - some validation errors will be ignored")
 		api.ffIgnorableValidationErrors = true
+	}
+
+	if os.Getenv("ENABLE_OPTIMISTIC_ALL_SLOTS") == "1" {
+		api.log.Warn("env: ENABLE_OPTIMISTIC_ALL_SLOTS - optimistic processing bypasses the slot==optimisticSlot gate")
+		api.ffOptimisticAllSlots = true
+	}
+
+	if os.Getenv("DISABLE_BUILDER_DEMOTION") == "1" {
+		api.log.Warn("env: DISABLE_BUILDER_DEMOTION - builders are never demoted")
+		api.ffDisableDemotion = true
 	}
 
 	return api, nil
@@ -502,6 +518,17 @@ func (api *RelayAPI) StartServer() (err error) {
 
 	// start proposer API specific things
 	if api.opts.ProposerAPI {
+		// Optionally seed the known-validators cache so registrations are accepted
+		// before the first beacon-driven refresh (which can be many minutes away
+		// on a fresh devnet because the natural triggers gate on slot positions
+		// 4 and 20 of each epoch).
+		if len(api.opts.InitialKnownValidators) > 0 {
+			if err := api.datastore.SetInitialKnownValidators(api.opts.InitialKnownValidators, currentSlot); err != nil {
+				return fmt.Errorf("seed known validators: %w", err)
+			}
+			api.log.Infof("seeded %d known validators from --known-validators", len(api.opts.InitialKnownValidators))
+		}
+
 		// Update known validators (which can take 10-30 sec). This is a requirement for service readiness, because without them,
 		// getPayload() doesn't have the information it needs (known validators), which could lead to missed slots.
 		go api.datastore.RefreshKnownValidators(api.log, api.beaconClient, currentSlot)
@@ -688,6 +715,9 @@ func (api *RelayAPI) simulateBlock(ctx context.Context, opts blockSimOptions) (b
 }
 
 func (api *RelayAPI) demoteBuilder(pubkey string, req *common.VersionedSubmitBlockRequest, simError error) {
+	if api.ffDisableDemotion {
+		return // never demote: skips the status flip and its postgres write
+	}
 	metrics.BuilderDemotionCount.Add(
 		context.Background(),
 		1,
@@ -917,7 +947,7 @@ func (api *RelayAPI) updateProposerDuties(headSlot uint64) {
 	defer api.isUpdatingProposerDuties.Store(false)
 
 	// Update once every 8 slots (or more, if a slot was missed)
-	if headSlot%8 != 0 && headSlot-api.proposerDutiesSlot < 8 {
+	if api.proposerDutiesSlot > 0 && headSlot%8 != 0 && headSlot-api.proposerDutiesSlot < 8 {
 		return
 	}
 
@@ -950,7 +980,11 @@ func (api *RelayAPI) UpdateProposerDutiesWithoutChecks(headSlot uint64) {
 		api.proposerDutiesResponse = &respBytes
 	}
 	api.proposerDutiesMap = dutiesMap
-	api.proposerDutiesSlot = headSlot
+	// Only advance the gate slot when we actually got duties; otherwise let
+	// the next head event retry (Redis may not be populated yet by the housekeeper).
+	if len(duties) > 0 {
+		api.proposerDutiesSlot = headSlot
+	}
 	api.proposerDutiesLock.Unlock()
 
 	// pretty-print
@@ -2308,6 +2342,11 @@ func (api *RelayAPI) getForkFromSlot(slot uint64) spec.DataVersion {
 
 func (api *RelayAPI) handleSubmitNewBlock(w http.ResponseWriter, req *http.Request) {
 	var pf common.Profile
+	// Under ENABLE_OPTIMISTIC_ALL_SLOTS every submission is processed optimistically,
+	// so label it optimistic from the very start — otherwise submissions that exit
+	// early (rejects, before the optimistic decision below) keep the default false
+	// and show up as optimistic="false" in the metrics.
+	pf.Optimistic = api.ffOptimisticAllSlots
 	var prevTime, nextTime time.Time
 
 	headSlot := api.headSlot.Load()
@@ -2624,10 +2663,15 @@ func (api *RelayAPI) handleSubmitNewBlock(w http.ResponseWriter, req *http.Reque
 			ParentBeaconBlockRoot:       attrs.parentBeaconRoot,
 		},
 	}
-	// With sufficient collateral, process the block optimistically.
-	optimistic := builderEntry.status.IsOptimistic &&
-		builderEntry.collateral.Cmp(submission.BidTrace.Value.ToBig()) >= 0 &&
-		submission.BidTrace.Slot == api.optimisticSlot.Load()
+	// With sufficient collateral, process the block optimistically. When
+	// ENABLE_OPTIMISTIC_ALL_SLOTS is set, force the optimistic path unconditionally —
+	// bypassing the builder-status, collateral, and slot-gate checks — so every
+	// submission is optimistic from the very first one, with no pessimistic warmup
+	// while a builder's optimistic status and collateral propagate into the cache.
+	optimistic := api.ffOptimisticAllSlots ||
+		(builderEntry.status.IsOptimistic &&
+			builderEntry.collateral.Cmp(submission.BidTrace.Value.ToBig()) >= 0 &&
+			submission.BidTrace.Slot == api.optimisticSlot.Load())
 	pf.Optimistic = optimistic
 	if optimistic {
 		go api.processOptimisticBlock(opts, simResultC)
