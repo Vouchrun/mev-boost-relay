@@ -25,54 +25,62 @@ var (
 	ErrUnknownNetwork = errors.New("unknown network")
 	ErrEmptyPayload   = errors.New("empty payload")
 
-	EthNetworkHolesky = "holesky"
-	EthNetworkSepolia = "sepolia"
-	EthNetworkGoerli  = "goerli"
-	EthNetworkHoodi   = "hoodi"
-	EthNetworkMainnet = "mainnet"
-	EthNetworkCustom  = "custom"
+	EthNetworkHolesky    = "holesky"
+	EthNetworkSepolia    = "sepolia"
+	EthNetworkGoerli     = "goerli"
+	EthNetworkHoodi      = "hoodi"
+	EthNetworkMainnet    = "mainnet"
+	EthNetworkPulsechain = "pulsechain"
+	EthNetworkCustom     = "custom"
 
-	GenesisForkVersionHolesky = "0x01017000"
-	GenesisForkVersionSepolia = "0x90000069"
-	GenesisForkVersionGoerli  = "0x00001020"
-	GenesisForkVersionHoodi   = "0x10000910"
-	GenesisForkVersionMainnet = "0x00000000"
+	GenesisForkVersionHolesky    = "0x01017000"
+	GenesisForkVersionSepolia    = "0x90000069"
+	GenesisForkVersionGoerli     = "0x00001020"
+	GenesisForkVersionHoodi      = "0x10000910"
+	GenesisForkVersionMainnet    = "0x00000000"
+	GenesisForkVersionPulsechain = "0x00000369"
 
-	GenesisValidatorsRootHolesky = "0x9143aa7c615a7f7115e2b6aac319c03529df8242ae705fba9df39b79c59fa8b1"
-	GenesisValidatorsRootSepolia = "0xd8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078"
-	GenesisValidatorsRootGoerli  = "0x043db0d9a83813551ee2f33450d23797757d430911a9320530ad8a0eabc43efb"
-	GenesisValidatorsRootHoodi   = "0x212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f"
-	GenesisValidatorsRootMainnet = "0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95"
+	GenesisValidatorsRootHolesky    = "0x9143aa7c615a7f7115e2b6aac319c03529df8242ae705fba9df39b79c59fa8b1"
+	GenesisValidatorsRootSepolia    = "0xd8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078"
+	GenesisValidatorsRootGoerli     = "0x043db0d9a83813551ee2f33450d23797757d430911a9320530ad8a0eabc43efb"
+	GenesisValidatorsRootHoodi      = "0x212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f"
+	GenesisValidatorsRootMainnet    = "0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95"
+	GenesisValidatorsRootPulsechain = "0x3357ba0018a2582aeabe4ae847aa17d50a3a99aaeb66293c01f80a83aecd0c90"
 
-	BellatrixForkVersionHolesky = "0x03017000"
-	BellatrixForkVersionSepolia = "0x90000071"
-	BellatrixForkVersionGoerli  = "0x02001020"
-	BellatrixForkVersionHoodi   = "0x30000910"
-	BellatrixForkVersionMainnet = "0x02000000"
+	BellatrixForkVersionHolesky    = "0x03017000"
+	BellatrixForkVersionSepolia    = "0x90000071"
+	BellatrixForkVersionGoerli     = "0x02001020"
+	BellatrixForkVersionHoodi      = "0x30000910"
+	BellatrixForkVersionMainnet    = "0x02000000"
+	BellatrixForkVersionPulsechain = "0x0000036b"
 
-	CapellaForkVersionHolesky = "0x04017000"
-	CapellaForkVersionSepolia = "0x90000072"
-	CapellaForkVersionGoerli  = "0x03001020"
-	CapellaForkVersionHoodi   = "0x40000910"
-	CapellaForkVersionMainnet = "0x03000000"
+	CapellaForkVersionHolesky    = "0x04017000"
+	CapellaForkVersionSepolia    = "0x90000072"
+	CapellaForkVersionGoerli     = "0x03001020"
+	CapellaForkVersionHoodi      = "0x40000910"
+	CapellaForkVersionMainnet    = "0x03000000"
+	CapellaForkVersionPulsechain = "0x0000036c"
 
-	DenebForkVersionHolesky = "0x05017000"
-	DenebForkVersionSepolia = "0x90000073"
-	DenebForkVersionGoerli  = "0x04001020"
-	DenebForkVersionHoodi   = "0x50000910"
-	DenebForkVersionMainnet = "0x04000000"
+	DenebForkVersionHolesky    = "0x05017000"
+	DenebForkVersionSepolia    = "0x90000073"
+	DenebForkVersionGoerli     = "0x04001020"
+	DenebForkVersionHoodi      = "0x50000910"
+	DenebForkVersionMainnet    = "0x04000000"
+	DenebForkVersionPulsechain = "0xffffffff"
 
-	ElectraForkVersionHolesky = "0x06017000"
-	ElectraForkVersionSepolia = "0x90000074"
-	ElectraForkVersionGoerli  = "0x05001020"
-	ElectraForkVersionHoodi   = "0x60000910"
-	ElectraForkVersionMainnet = "0x05000000"
+	ElectraForkVersionHolesky    = "0x06017000"
+	ElectraForkVersionSepolia    = "0x90000074"
+	ElectraForkVersionGoerli     = "0x05001020"
+	ElectraForkVersionHoodi      = "0x60000910"
+	ElectraForkVersionMainnet    = "0x05000000"
+	ElectraForkVersionPulsechain = "0x0000036e"
 
-	FuluForkVersionHolesky = "0x07017000"
-	FuluForkVersionSepolia = "0x90000075"
-	FuluForkVersionGoerli  = "0x06001020"
-	FuluForkVersionHoodi   = "0x70000910"
-	FuluForkVersionMainnet = "0x06000000"
+	FuluForkVersionHolesky    = "0x07017000"
+	FuluForkVersionSepolia    = "0x90000075"
+	FuluForkVersionGoerli     = "0x06001020"
+	FuluForkVersionHoodi      = "0x70000910"
+	FuluForkVersionMainnet    = "0x06000000"
+	FuluForkVersionPulsechain = "0x0000036f"
 
 	ForkVersionStringBellatrix = "bellatrix"
 	ForkVersionStringCapella   = "capella"
@@ -155,6 +163,14 @@ func NewEthNetworkDetails(networkName string) (ret *EthNetworkDetails, err error
 		denebForkVersion = DenebForkVersionMainnet
 		electraForkVersion = ElectraForkVersionMainnet
 		fuluForkVersion = FuluForkVersionMainnet
+	case EthNetworkPulsechain:
+		genesisForkVersion = GenesisForkVersionPulsechain
+		genesisValidatorsRoot = GenesisValidatorsRootPulsechain
+		bellatrixForkVersion = BellatrixForkVersionPulsechain
+		capellaForkVersion = CapellaForkVersionPulsechain
+		denebForkVersion = DenebForkVersionPulsechain
+		electraForkVersion = ElectraForkVersionPulsechain
+		fuluForkVersion = FuluForkVersionPulsechain
 	case EthNetworkCustom:
 		genesisForkVersion = os.Getenv("GENESIS_FORK_VERSION")
 		genesisValidatorsRoot = os.Getenv("GENESIS_VALIDATORS_ROOT")

@@ -90,6 +90,21 @@ func TestDataVersion(t *testing.T) {
 	require.Equal(t, ForkVersionStringDeneb, spec.DataVersionDeneb.String())
 }
 
+func TestNewEthNetworkDetailsPulsechain(t *testing.T) {
+	details, err := NewEthNetworkDetails(EthNetworkPulsechain)
+	require.NoError(t, err)
+	require.Equal(t, EthNetworkPulsechain, details.Name)
+	require.Equal(t, GenesisForkVersionPulsechain, details.GenesisForkVersionHex)
+	require.Equal(t, GenesisValidatorsRootPulsechain, details.GenesisValidatorsRootHex)
+	require.Equal(t, BellatrixForkVersionPulsechain, details.BellatrixForkVersionHex)
+	require.Equal(t, CapellaForkVersionPulsechain, details.CapellaForkVersionHex)
+	require.Equal(t, DenebForkVersionPulsechain, details.DenebForkVersionHex)
+	require.Equal(t, ElectraForkVersionPulsechain, details.ElectraForkVersionHex)
+	require.Equal(t, FuluForkVersionPulsechain, details.FuluForkVersionHex)
+	require.NotEqual(t, phase0.Domain{}, details.DomainBuilder)
+	require.NotEqual(t, phase0.Domain{}, details.DomainBeaconProposerCapella)
+}
+
 func compareV2RequestEquality(t *testing.T, src, targ *SubmitBlockRequestV2Optimistic) {
 	t.Helper()
 	require.Equal(t, src.Message.String(), targ.Message.String())
