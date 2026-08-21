@@ -6,7 +6,10 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
+	"github.com/attestantio/go-eth2-client/spec/bellatrix"
+	gethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
 	"github.com/flashbots/go-boost-utils/bls"
 	"github.com/flashbots/mev-boost-relay/beaconclient"
@@ -14,6 +17,7 @@ import (
 	"github.com/flashbots/mev-boost-relay/database"
 	"github.com/flashbots/mev-boost-relay/datastore"
 	"github.com/flashbots/mev-boost-relay/services/api"
+	"github.com/flashbots/mev-boost-relay/services/registry"
 	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
@@ -64,6 +68,17 @@ func init() {
 	apiCmd.Flags().StringVar(&apiSecretKey, "secret-key", apiDefaultSecretKey, "secret key for signing bids")
 	apiCmd.Flags().StringVar(&apiBlockSimURL, "blocksim", apiDefaultBlockSim, "URL for block simulator")
 	apiCmd.Flags().StringVar(&network, "network", defaultNetwork, "Which network to use")
+
+	apiCmd.Flags().StringVar(&protocolFeeRecipient, "protocol-fee-recipient", defaultProtocolFeeRecipient,
+		"protocol fee recipient (VFD) that Vouch validators must use; enables protocol fee-recipient enforcement")
+	apiCmd.Flags().StringVar(&vouchRegistryAddress, "vouch-registry-address", defaultVouchRegistryAddress,
+		"NodeDeposit contract address for the Vouch validator registry (mainnet 0x3f82615aE0C027d587FD0d04d9EaCc8f0BaCFf94)")
+	apiCmd.Flags().StringVar(&registryRefreshInterval, "registry-refresh-interval", defaultRegistryRefreshInterval,
+		"interval for refreshing the Vouch registry from NodeDeposit (e.g. 5m)")
+	apiCmd.Flags().StringVar(&vouchPubkeysFile, "vouch-pubkeys-file", defaultVouchPubkeysFile,
+		"optional static file of Vouch validator pubkeys (one per line, 0x-prefixed) as a fallback source")
+	apiCmd.Flags().StringVar(&vouchRegistryRPC, "vouch-registry-rpc", defaultVouchRegistryRPC,
+		"eth JSON-RPC endpoint for reading the Vouch registry (e.g. http://localhost:8545)")
 
 	apiCmd.Flags().StringVar(&apiPprofListenAddr, "pprof-listen-addr", apiDefaultPprofListenAddr, "listen address for pprof, empty to disable")
 
@@ -160,6 +175,48 @@ var apiCmd = &cobra.Command{
 			log.WithError(err).Fatalf("Failed setting up prod datastore")
 		}
 
+		// Protocol fee-recipient enforcement (Vouch registry). Disabled unless a
+		// protocol fee recipient is configured. Invalid hex is fatal.
+		var protocolFeeRecipientAddr *bellatrix.ExecutionAddress
+		if protocolFeeRecipient != "" {
+			addr, err := registry.ParseAddress(protocolFeeRecipient)
+			if err != nil {
+				log.WithError(err).Fatal("invalid protocol fee recipient address")
+			}
+			protocolFeeRecipientAddr = &addr
+		}
+		var vouchRegistry *registry.Registry
+		if protocolFeeRecipientAddr != nil {
+			var contractAddr gethcommon.Address
+			if vouchRegistryAddress != "" {
+				addr, err := registry.ParseAddress(vouchRegistryAddress)
+				if err != nil {
+					log.WithError(err).Fatal("invalid vouch registry address")
+				}
+				contractAddr = gethcommon.Address(addr)
+			}
+			refreshInterval, err := time.ParseDuration(registryRefreshInterval)
+			if err != nil {
+				log.WithError(err).Fatal("invalid registry refresh interval")
+			}
+			if vouchRegistryRPC == "" && vouchPubkeysFile == "" {
+				log.Warn("protocol fee-recipient enforcement enabled but no registry source configured (no --vouch-registry-rpc / --vouch-pubkeys-file); registry will be empty (fail-open)")
+			}
+			vouchRegistry, err = registry.New(registry.Opts{
+				Log:               log,
+				RPCURL:            vouchRegistryRPC,
+				ContractAddress:   contractAddr,
+				Redis:             redis,
+				RefreshInterval:   refreshInterval,
+				StaticPubkeysFile: vouchPubkeysFile,
+			})
+			if err != nil {
+				log.WithError(err).Fatal("failed to set up vouch registry")
+			}
+			vouchRegistry.Start()
+			log.Infof("protocol fee-recipient enforcement enabled: recipient %s", protocolFeeRecipientAddr.String())
+		}
+
 		opts := api.RelayAPIOpts{
 			Log:           log,
 			ListenAddr:    apiListenAddr,
@@ -179,6 +236,9 @@ var apiCmd = &cobra.Command{
 			ProposerAPI:     apiProposerAPI,
 
 			InitialKnownValidators: apiKnownValidators,
+
+			ProtocolFeeRecipient: protocolFeeRecipientAddr,
+			VouchRegistry:        vouchRegistry,
 		}
 
 		// Decode the private key

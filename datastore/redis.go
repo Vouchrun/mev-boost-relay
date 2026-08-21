@@ -100,6 +100,8 @@ type RedisCache struct {
 	// keys
 	keyValidatorRegistrationData string
 
+	keyVouchRegistry string
+
 	keyRelayConfig        string
 	keyStats              string
 	keyProposerDuties     string
@@ -141,6 +143,7 @@ func NewRedisCache(prefix, redisURI, readonlyURI string) (*RedisCache, error) {
 		prefixFloorBidValue:               fmt.Sprintf("%s/%s:bid-floor-value", redisPrefix, prefix),                // prefix:slot_parentHash_proposerPubkey
 
 		keyValidatorRegistrationData: fmt.Sprintf("%s/%s:validator-registration-data", redisPrefix, prefix),
+		keyVouchRegistry:             fmt.Sprintf("%s/%s:vouch-registry", redisPrefix, prefix),
 		keyRelayConfig:               fmt.Sprintf("%s/%s:relay-config", redisPrefix, prefix),
 
 		keyStats:              fmt.Sprintf("%s/%s:stats", redisPrefix, prefix),
@@ -267,6 +270,24 @@ func (r *RedisCache) SetValidatorRegistrationData(data *builderApiV1.ValidatorRe
 		return err
 	}
 	return r.client.HSet(context.Background(), r.keyValidatorRegistrationData, pk, dataBytes).Err()
+}
+
+// GetVouchRegistry returns the set of Vouch validator pubkeys (lowercase, 0x-prefixed)
+// stored by the registry sync service. An empty result means the registry is not
+// (yet) populated.
+func (r *RedisCache) GetVouchRegistry() ([]string, error) {
+	return r.client.SMembers(context.Background(), r.keyVouchRegistry).Result()
+}
+
+// SetVouchRegistry atomically replaces the stored set of Vouch validator pubkeys.
+func (r *RedisCache) SetVouchRegistry(pubkeys []string) error {
+	pipe := r.client.TxPipeline()
+	pipe.Del(context.Background(), r.keyVouchRegistry)
+	if len(pubkeys) > 0 {
+		pipe.SAdd(context.Background(), r.keyVouchRegistry, pubkeys)
+	}
+	_, err := pipe.Exec(context.Background())
+	return err
 }
 
 func (r *RedisCache) CheckAndSetLastSlotAndHashDelivered(slot uint64, hash string) (err error) {

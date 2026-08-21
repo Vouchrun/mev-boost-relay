@@ -25,6 +25,7 @@ import (
 	builderApiV1 "github.com/attestantio/go-builder-client/api/v1"
 	builderSpec "github.com/attestantio/go-builder-client/spec"
 	"github.com/attestantio/go-eth2-client/spec"
+	"github.com/attestantio/go-eth2-client/spec/bellatrix"
 	"github.com/attestantio/go-eth2-client/spec/phase0"
 	"github.com/buger/jsonparser"
 	"github.com/flashbots/go-boost-utils/bls"
@@ -37,6 +38,7 @@ import (
 	"github.com/flashbots/mev-boost-relay/database"
 	"github.com/flashbots/mev-boost-relay/datastore"
 	"github.com/flashbots/mev-boost-relay/metrics"
+	"github.com/flashbots/mev-boost-relay/services/registry"
 	"github.com/goccy/go-json"
 	"github.com/gorilla/mux"
 	"github.com/holiman/uint256"
@@ -177,6 +179,13 @@ type RelayAPIOpts struct {
 	// InitialKnownValidators seeds the known-validators cache at startup so the
 	// relay accepts registrations before the first beacon-driven refresh.
 	InitialKnownValidators []string
+
+	// ProtocolFeeRecipient, when set, enables protocol fee-recipient enforcement:
+	// validators in the Vouch registry must register the protocol fee recipient.
+	ProtocolFeeRecipient *bellatrix.ExecutionAddress
+	// VouchRegistry supplies the set of Vouch validator pubkeys used by the
+	// enforcement predicate. Nil disables enforcement.
+	VouchRegistry *registry.Registry
 }
 
 type payloadAttributesHelper struct {
@@ -261,6 +270,10 @@ type RelayAPI struct {
 	ffOptimisticAllSlots         bool // accept optimistically regardless of the slot==optimisticSlot gate
 	ffDisableDemotion            bool // never demote a builder (skip the demotion and its DB write)
 
+	// Protocol fee-recipient enforcement
+	protocolFeeRecipient *bellatrix.ExecutionAddress
+	vouchRegistry        *registry.Registry
+
 	payloadAttributes     map[string]payloadAttributesHelper // key:parentBlockHash
 	payloadAttributesLock sync.RWMutex
 
@@ -342,6 +355,9 @@ func NewRelayAPI(opts RelayAPIOpts) (api *RelayAPI, err error) {
 
 		validatorRegC:     make(chan builderApiV1.SignedValidatorRegistration, 450_000),
 		validatorUpdateCh: make(chan struct{}),
+
+		protocolFeeRecipient: opts.ProtocolFeeRecipient,
+		vouchRegistry:        opts.VouchRegistry,
 	}
 
 	if os.Getenv("FORCE_GET_HEADER_204") == "1" {
@@ -2089,6 +2105,38 @@ func (api *RelayAPI) handleBuilderGetValidators(w http.ResponseWriter, req *http
 	}
 }
 
+// isVouchPubkey reports whether the pubkey belongs to the Vouch validator
+// registry. Returns false when enforcement is disabled (no registry configured).
+func (api *RelayAPI) isVouchPubkey(pubkey string) bool {
+	if api.vouchRegistry == nil {
+		return false
+	}
+	return api.vouchRegistry.IsVouchPubkey(pubkey)
+}
+
+// isProtocolRecipient reports whether the address is the configured protocol fee
+// recipient (VFD). Returns false when enforcement is disabled.
+func (api *RelayAPI) isProtocolRecipient(addr bellatrix.ExecutionAddress) bool {
+	if api.protocolFeeRecipient == nil {
+		return false
+	}
+	return *api.protocolFeeRecipient == addr
+}
+
+// checkProtocolFeeRecipient enforces the protocol fee-recipient predicate for a
+// Vouch validator: if the pubkey is in the Vouch registry, the fee recipient must
+// be the protocol fee recipient (fail-closed); unknown pubkeys are allowed
+// (fail-open, normal public-relay service).
+func (api *RelayAPI) checkProtocolFeeRecipient(pubkey string, feeRecipient bellatrix.ExecutionAddress) bool {
+	if api.protocolFeeRecipient == nil || api.vouchRegistry == nil {
+		return true // enforcement disabled
+	}
+	if !api.isVouchPubkey(pubkey) {
+		return true // external validator, any recipient allowed
+	}
+	return api.isProtocolRecipient(feeRecipient)
+}
+
 func (api *RelayAPI) checkSubmissionFeeRecipient(w http.ResponseWriter, log *logrus.Entry, bidTrace *builderApiV1.BidTrace) (uint64, bool) {
 	api.proposerDutiesLock.RLock()
 	slotDuty := api.proposerDutiesMap[bidTrace.Slot]
@@ -2103,6 +2151,17 @@ func (api *RelayAPI) checkSubmissionFeeRecipient(w http.ResponseWriter, log *log
 			"actualFeeRecipient":   bidTrace.ProposerFeeRecipient.String(),
 		}).Info("fee recipient does not match")
 		api.RespondError(w, http.StatusBadRequest, "fee recipient does not match")
+		return 0, false
+	} else if !api.checkProtocolFeeRecipient(slotDuty.Entry.Message.Pubkey.String(), slotDuty.Entry.Message.FeeRecipient) {
+		// The lock: a Vouch validator whose registered recipient is not the protocol
+		// fee recipient gets no MEV service, even if its registration slipped through
+		// before the registry sync picked the pubkey up.
+		log.WithFields(logrus.Fields{
+			"pubkey":              slotDuty.Entry.Message.Pubkey.String(),
+			"registeredRecipient": slotDuty.Entry.Message.FeeRecipient.String(),
+		}).Info("vouch validator registered a non-protocol fee recipient")
+		metrics.ValidatorRegistrationFeeRecipientRejectedCount.Add(context.Background(), 1)
+		api.RespondError(w, http.StatusBadRequest, common.ErrFeeRecipientNotAllowed.Error())
 		return 0, false
 	}
 	return slotDuty.Entry.Message.GasLimit, true
@@ -3210,6 +3269,13 @@ func (api *RelayAPI) processValidatorRegistrationJSON(regs []*common.SimpleValid
 			return nil, common.ErrTimestampTooFarInFuture, nil
 		}
 
+		// Protocol fee-recipient enforcement: a Vouch validator must register the
+		// protocol fee recipient (fail-closed); external validators are unrestricted.
+		if !api.checkProtocolFeeRecipient(reg.Pubkey.String(), reg.FeeRecipient) {
+			metrics.ValidatorRegistrationFeeRecipientRejectedCount.Add(context.Background(), 1)
+			return nil, common.ErrFeeRecipientNotAllowed, nil
+		}
+
 		// Check for a previous registration timestamp and see if fields changed
 		cachedRegistrationData, err := api.datastore.GetCachedValidatorRegistration(reg.Pubkey)
 		haveCachedRegistration := cachedRegistrationData != nil
@@ -3270,6 +3336,13 @@ func (api *RelayAPI) processValidatorRegistrationsSSZ(regs []*builderApiV1.Signe
 			return nil, common.ErrTimestampTooEarly, nil
 		} else if registrationTimestamp > registrationTimestampUpperBound {
 			return nil, common.ErrTimestampTooFarInFuture, nil
+		}
+
+		// Protocol fee-recipient enforcement: a Vouch validator must register the
+		// protocol fee recipient (fail-closed); external validators are unrestricted.
+		if !api.checkProtocolFeeRecipient(pk.String(), signedValidatorRegistration.Message.FeeRecipient) {
+			metrics.ValidatorRegistrationFeeRecipientRejectedCount.Add(context.Background(), 1)
+			return nil, common.ErrFeeRecipientNotAllowed, nil
 		}
 
 		// Check for a previous registration timestamp and see if fields changed
