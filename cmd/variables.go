@@ -17,6 +17,12 @@ var (
 	defaultLogJSON           = os.Getenv("LOG_JSON") != ""
 	defaultLogLevel          = common.GetEnv("LOG_LEVEL", "info")
 
+	defaultProtocolFeeRecipient    = common.GetEnv("PROTOCOL_FEE_RECIPIENT", "")
+	defaultVouchRegistryAddress    = common.GetEnv("VOUCH_REGISTRY_ADDRESS", "")
+	defaultRegistryRefreshInterval = common.GetEnv("REGISTRY_REFRESH_INTERVAL", "5m")
+	defaultVouchPubkeysFile        = common.GetEnv("VOUCH_PUBKEYS_FILE", "")
+	defaultVouchRegistryRPC        = common.GetEnv("VOUCH_REGISTRY_RPC", "")
+
 	beaconNodeURIs        []string
 	beaconNodePublishURIs []string
 	redisURI              string
@@ -28,4 +34,10 @@ var (
 	logLevel string
 
 	network string
+
+	protocolFeeRecipient    string
+	vouchRegistryAddress    string
+	registryRefreshInterval string
+	vouchPubkeysFile        string
+	vouchRegistryRPC        string
 )

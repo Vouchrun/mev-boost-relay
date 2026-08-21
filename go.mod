@@ -38,15 +38,18 @@ require (
 )
 
 require (
+	github.com/Microsoft/go-winio v0.6.2 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bits-and-blooms/bitset v1.22.0 // indirect
 	github.com/consensys/bavard v0.1.30 // indirect
 	github.com/consensys/gnark-crypto v0.17.0 // indirect
 	github.com/crate-crypto/go-ipa v0.0.0-20240724233137-53bbb0ceb27a // indirect
 	github.com/crate-crypto/go-kzg-4844 v1.1.0 // indirect
+	github.com/deckarep/golang-set/v2 v2.6.0 // indirect
 	github.com/emicklei/dot v1.8.0 // indirect
 	github.com/ethereum/c-kzg-4844 v1.0.3 // indirect
 	github.com/ethereum/go-verkle v0.2.2 // indirect
+	github.com/fsnotify/fsnotify v1.6.0 // indirect
 	github.com/go-gorp/gorp/v3 v3.1.0 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
@@ -55,6 +58,7 @@ require (
 	github.com/gofrs/flock v0.12.1 // indirect
 	github.com/golang/snappy v0.0.5-0.20220116011046-fa5810519dcb // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/gorilla/websocket v1.5.0 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/mmcloughlin/addchain v0.4.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect

@@ -11,4 +11,6 @@ var (
 	ErrTimestampNegative       = errors.New("timestamp is negative")
 	ErrTimestampTooEarly       = errors.New("timestamp too early")
 	ErrTimestampTooFarInFuture = errors.New("timestamp too far in the future")
+
+	ErrFeeRecipientNotAllowed = errors.New("fee recipient not allowed for vouch validator")
 )

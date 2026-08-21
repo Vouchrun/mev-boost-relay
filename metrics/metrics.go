@@ -39,13 +39,14 @@ var (
 
 	CurrentHeadSlotGauge otelapi.Int64Gauge
 
-	SubmitNewBlockCount              otelapi.Int64Counter
-	GetHeaderCount                   otelapi.Int64Counter
-	GetPayloadCount                  otelapi.Int64Counter
-	GetPayloadDeliveryFailureCount   otelapi.Int64Counter
-	PayloadDeliveryExceededSlotCount otelapi.Int64Counter
-	RegisterValidatorCount           otelapi.Int64Counter
-	MissedSlotCount                  otelapi.Int64Counter
+	SubmitNewBlockCount                            otelapi.Int64Counter
+	GetHeaderCount                                 otelapi.Int64Counter
+	GetPayloadCount                                otelapi.Int64Counter
+	GetPayloadDeliveryFailureCount                 otelapi.Int64Counter
+	PayloadDeliveryExceededSlotCount               otelapi.Int64Counter
+	RegisterValidatorCount                         otelapi.Int64Counter
+	MissedSlotCount                                otelapi.Int64Counter
+	ValidatorRegistrationFeeRecipientRejectedCount otelapi.Int64Counter
 
 	BuilderDemotionCount otelapi.Int64Counter
 
@@ -104,6 +105,7 @@ func Setup(ctx context.Context) error {
 			setupPayloadDeliveryExceededSlotCount,
 			setupRegisterValidatorCount,
 			setupMissedSlotCount,
+			setupValidatorRegistrationFeeRecipientRejectedCount,
 			setupSubmitNewBlockBidValue,
 			setupSubmitNewBlockPayloadSize,
 			setupSubmitNewBlockSlotAge,
@@ -395,6 +397,18 @@ func setupRegisterValidatorCount(_ context.Context) error {
 		otelapi.WithDescription("number of registerValidator requests by status"),
 	)
 	RegisterValidatorCount = counter
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func setupValidatorRegistrationFeeRecipientRejectedCount(_ context.Context) error {
+	counter, err := meter.Int64Counter(
+		"validator_registration_fee_recipient_rejected_count",
+		otelapi.WithDescription("number of validator registrations rejected because a Vouch validator registered a non-protocol fee recipient"),
+	)
+	ValidatorRegistrationFeeRecipientRejectedCount = counter
 	if err != nil {
 		return err
 	}
