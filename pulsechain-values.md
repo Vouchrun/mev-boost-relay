@@ -27,7 +27,7 @@ Live beacon source: `https://rpc-beacon.vouch.run/eth/v1/beacon/genesis`,
 re-verified against the sibling repo `repos/mev-boost/pulsechain-values.md`). Atlas values
 extracted from commit `b1c0153` ("feat: Add PulseChain network support") on `atlas/main`.
 
-## Files changed (branch `pulsechain`)
+## Files changed (branch `pulse`)
 
 | File | Change |
 |---|---|
