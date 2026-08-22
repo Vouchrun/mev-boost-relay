@@ -10,9 +10,11 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -169,29 +171,57 @@ func (r *Registry) sync() {
 	r.log.WithField("pubkeys", len(pubkeys)).Info("vouch registry synced")
 }
 
-// enumerate reads the Vouch pubkey set from NodeDeposit via the per-index getter
-// (never getPubkeysOfNode — quadratic memory wall).
+// enumerate reads the Vouch pubkey set from the bound contract via the per-index
+// getter (never getPubkeysOfNode — quadratic memory wall).
 func (r *Registry) enumerate() ([]string, error) {
+	if r.contract == nil {
+		return nil, errors.New("no contract bound")
+	}
+	pubkeys, _, err := enumerateWithContract(r.contract)
+	return pubkeys, err
+}
+
+// EnumeratePubkeys dials the EL RPC and enumerates the Vouch pubkey set from
+// NodeDeposit via the per-index getter (never getPubkeysOfNode). Returns the
+// pubkeys normalized to lowercase 0x-prefixed hex and the number of nodes
+// enumerated. Any RPC failure returns an error — callers (e.g. the export tool)
+// must treat the result as incomplete.
+func EnumeratePubkeys(rpcURL string, contractAddr common.Address) (pubkeys []string, nodes int, err error) {
+	client, err := ethclient.Dial(rpcURL)
+	if err != nil {
+		return nil, 0, fmt.Errorf("could not dial RPC: %w", err)
+	}
+	parsedABI, err := abi.JSON(strings.NewReader(nodeDepositABI))
+	if err != nil {
+		return nil, 0, err
+	}
+	contract := bind.NewBoundContract(contractAddr, parsedABI, client, client, client)
+	return enumerateWithContract(contract)
+}
+
+// enumerateWithContract reads the Vouch pubkey set from a bound NodeDeposit
+// contract via the per-index getter across all nodes.
+func enumerateWithContract(contract *bind.BoundContract) ([]string, int, error) {
 	opts := &bind.CallOpts{Context: context.Background()}
 
 	var res []any
-	if err := r.contract.Call(opts, &res, "getNodesLength"); err != nil {
-		return nil, fmt.Errorf("getNodesLength: %w", err)
+	if err := contract.Call(opts, &res, "getNodesLength"); err != nil {
+		return nil, 0, fmt.Errorf("getNodesLength: %w", err)
 	}
 	if len(res) == 0 {
-		return []string{}, nil
+		return []string{}, 0, nil
 	}
 	nodesLen, _ := res[0].(*big.Int)
 	if nodesLen == nil || nodesLen.Sign() == 0 {
-		return []string{}, nil
+		return []string{}, 0, nil
 	}
 
 	var res2 []any
-	if err := r.contract.Call(opts, &res2, "getNodes", big.NewInt(0), nodesLen); err != nil {
-		return nil, fmt.Errorf("getNodes: %w", err)
+	if err := contract.Call(opts, &res2, "getNodes", big.NewInt(0), nodesLen); err != nil {
+		return nil, 0, fmt.Errorf("getNodes: %w", err)
 	}
 	if len(res2) == 0 {
-		return []string{}, nil
+		return []string{}, 0, nil
 	}
 	nodes, _ := res2[0].([]common.Address)
 
@@ -199,7 +229,7 @@ func (r *Registry) enumerate() ([]string, error) {
 	for _, node := range nodes {
 		for i := uint64(0); ; i++ {
 			var res3 []any
-			if err := r.contract.Call(opts, &res3, "pubkeysOfNode", node, new(big.Int).SetUint64(i)); err != nil {
+			if err := contract.Call(opts, &res3, "pubkeysOfNode", node, new(big.Int).SetUint64(i)); err != nil {
 				break // out-of-range index reverts → end of this node's list
 			}
 			if len(res3) == 0 {
@@ -217,7 +247,8 @@ func (r *Registry) enumerate() ([]string, error) {
 	for pk := range set {
 		pubkeys = append(pubkeys, pk)
 	}
-	return pubkeys, nil
+	sort.Strings(pubkeys)
+	return pubkeys, len(nodes), nil
 }
 
 // IsVouchPubkey reports whether the given pubkey is in the Vouch registry.
@@ -255,6 +286,28 @@ func loadPubkeysFile(path string) ([]string, error) {
 		pubkeys = append(pubkeys, line)
 	}
 	return pubkeys, nil
+}
+
+// WritePubkeysFile writes the pubkeys in exactly the format loadPubkeysFile
+// reads: one 0x-prefixed hex pubkey per line (lowercase, sorted), blank lines and
+// `#` comment lines tolerated on read. Duplicates are dropped.
+func WritePubkeysFile(path string, pubkeys []string) error {
+	set := make(map[string]struct{}, len(pubkeys))
+	for _, pk := range pubkeys {
+		set[strings.ToLower(pk)] = struct{}{}
+	}
+	unique := make([]string, 0, len(set))
+	for pk := range set {
+		unique = append(unique, pk)
+	}
+	sort.Strings(unique)
+
+	var b strings.Builder
+	for _, pk := range unique {
+		b.WriteString(pk)
+		b.WriteByte('\n')
+	}
+	return os.WriteFile(path, []byte(b.String()), 0o600)
 }
 
 // ParseAddress validates a hex address and returns it as an execution address.

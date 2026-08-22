@@ -62,6 +62,39 @@ func TestLoadPubkeysFile(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestWritePubkeysFileRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pubkeys.txt")
+
+	// mixed case + duplicates must normalize to a unique lowercase set
+	input := []string{
+		testVouchPubkey,
+		"0x8A1D7B8DD64E0AAFE7EA7B6C95065C9364CF99D38470C12EE807D55F7DE1529AD29CE2C422E0B65E3D5A05C02CACA249", // same pubkey, uppercase
+		testExternalPubkey,
+	}
+	require.NoError(t, WritePubkeysFile(path, input))
+
+	// LoadPubkeysFile must read back exactly the normalized unique set
+	got, err := loadPubkeysFile(path)
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	require.Contains(t, got, testVouchPubkey)
+	require.Contains(t, got, testExternalPubkey)
+
+	// deterministic: second write produces identical content
+	require.NoError(t, WritePubkeysFile(path, input))
+	got2, err := loadPubkeysFile(path)
+	require.NoError(t, err)
+	require.Equal(t, got, got2)
+
+	// empty set writes an empty file that reads back empty
+	emptyPath := filepath.Join(dir, "empty.txt")
+	require.NoError(t, WritePubkeysFile(emptyPath, nil))
+	got3, err := loadPubkeysFile(emptyPath)
+	require.NoError(t, err)
+	require.Empty(t, got3)
+}
+
 func TestRedisLastKnownGood(t *testing.T) {
 	s := miniredis.RunT(t)
 	redis, err := datastore.NewRedisCache("testnet", s.Addr(), "")
