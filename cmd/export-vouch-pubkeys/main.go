@@ -6,8 +6,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -24,7 +27,9 @@ var (
 )
 
 func main() {
-	if err := exportCmd.Execute(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	if err := exportCmd.ExecuteContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -49,7 +54,7 @@ var exportCmd = &cobra.Command{
 		}
 
 		start := time.Now()
-		pubkeys, nodes, err := registry.EnumeratePubkeys(rpcURL, common.Address(contractAddr))
+		pubkeys, nodes, err := registry.EnumeratePubkeys(cmd.Context(), rpcURL, common.Address(contractAddr))
 		if err != nil {
 			// Operator must know the file would be incomplete — fail, do not write.
 			fmt.Fprintf(os.Stderr, "error: registry enumeration failed (no file written): %v\n", err)

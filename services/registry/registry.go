@@ -22,9 +22,9 @@ import (
 
 	"github.com/attestantio/go-eth2-client/spec/bellatrix"
 	"github.com/ethereum/go-ethereum/accounts/abi"
-	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/flashbots/go-boost-utils/utils"
 	"github.com/flashbots/mev-boost-relay/datastore"
 	"github.com/sirupsen/logrus"
@@ -54,11 +54,12 @@ type Opts struct {
 // Registry holds the in-memory set of Vouch validator pubkeys and refreshes it
 // from NodeDeposit on an interval.
 type Registry struct {
-	log      *logrus.Entry
-	eth      *ethclient.Client
-	contract *bind.BoundContract
-	redis    *datastore.RedisCache
-	refresh  time.Duration
+	log          *logrus.Entry
+	rpcClient    *rpc.Client
+	contractAddr common.Address
+	parsedABI    abi.ABI
+	redis        *datastore.RedisCache
+	refresh      time.Duration
 
 	mu      sync.RWMutex
 	pubkeys map[string]struct{} // lowercase 0x-prefixed hex pubkeys
@@ -94,16 +95,17 @@ func New(opts Opts) (*Registry, error) {
 	}
 
 	if opts.RPCURL != "" {
-		client, err := ethclient.Dial(opts.RPCURL)
+		rpcClient, err := rpc.DialContext(context.Background(), opts.RPCURL)
 		if err != nil {
 			return nil, err
 		}
-		r.eth = client
 		parsedABI, err := abi.JSON(strings.NewReader(nodeDepositABI))
 		if err != nil {
 			return nil, err
 		}
-		r.contract = bind.NewBoundContract(opts.ContractAddress, parsedABI, client, client, client)
+		r.rpcClient = rpcClient
+		r.contractAddr = opts.ContractAddress
+		r.parsedABI = parsedABI
 	}
 
 	// Last-known-good from Redis (survives restarts; never cleared on failure).
@@ -149,7 +151,7 @@ func (r *Registry) loop() {
 // sync re-enumerates the registry and, on success, replaces the in-memory set
 // and the Redis copy. On RPC failure the previous set is kept (last-known-good).
 func (r *Registry) sync() {
-	if r.eth == nil {
+	if r.rpcClient == nil {
 		return
 	}
 	if !r.syncing.CompareAndSwap(false, true) {
@@ -157,7 +159,12 @@ func (r *Registry) sync() {
 	}
 	defer r.syncing.Store(false)
 
-	pubkeys, err := r.enumerate()
+	// Bound the enumeration so a hung RPC cannot block the next refresh behind
+	// the sync-in-progress guard; the refresh cadence is the deadline.
+	ctx, cancel := context.WithTimeout(context.Background(), r.refresh)
+	defer cancel()
+
+	pubkeys, err := r.enumerateContext(ctx)
 	if err != nil {
 		r.log.WithError(err).Error("vouch registry sync failed; keeping last-known-good set")
 		return
@@ -174,20 +181,24 @@ func (r *Registry) sync() {
 // enumerate reads the Vouch pubkey set from the bound contract via the per-index
 // getter (never getPubkeysOfNode — quadratic memory wall).
 func (r *Registry) enumerate() ([]string, error) {
-	if r.contract == nil {
-		return nil, errors.New("no contract bound")
+	return r.enumerateContext(context.Background())
+}
+
+func (r *Registry) enumerateContext(ctx context.Context) ([]string, error) {
+	if r.rpcClient == nil {
+		return nil, errors.New("no RPC configured")
 	}
-	pubkeys, _, err := enumerateWithContract(r.contract)
+	pubkeys, _, err := enumerateWithClient(ctx, r.rpcClient, r.contractAddr, r.parsedABI)
 	return pubkeys, err
 }
 
 // EnumeratePubkeys dials the EL RPC and enumerates the Vouch pubkey set from
 // NodeDeposit via the per-index getter (never getPubkeysOfNode). Returns the
 // pubkeys normalized to lowercase 0x-prefixed hex and the number of nodes
-// enumerated. Any RPC failure returns an error — callers (e.g. the export tool)
-// must treat the result as incomplete.
-func EnumeratePubkeys(rpcURL string, contractAddr common.Address) (pubkeys []string, nodes int, err error) {
-	client, err := ethclient.Dial(rpcURL)
+// enumerated. Any RPC failure (other than the end-of-list revert) returns an
+// error — callers (e.g. the export tool) must treat the result as incomplete.
+func EnumeratePubkeys(ctx context.Context, rpcURL string, contractAddr common.Address) (pubkeys []string, nodes int, err error) {
+	rpcClient, err := rpc.DialContext(ctx, rpcURL)
 	if err != nil {
 		return nil, 0, fmt.Errorf("could not dial RPC: %w", err)
 	}
@@ -195,17 +206,25 @@ func EnumeratePubkeys(rpcURL string, contractAddr common.Address) (pubkeys []str
 	if err != nil {
 		return nil, 0, err
 	}
-	contract := bind.NewBoundContract(contractAddr, parsedABI, client, client, client)
-	return enumerateWithContract(contract)
+	return enumerateWithClient(ctx, rpcClient, contractAddr, parsedABI)
 }
 
-// enumerateWithContract reads the Vouch pubkey set from a bound NodeDeposit
-// contract via the per-index getter across all nodes.
-func enumerateWithContract(contract *bind.BoundContract) ([]string, int, error) {
-	opts := &bind.CallOpts{Context: context.Background()}
+// enumerationWorkers bounds the number of concurrent node walks (max in-flight
+// HTTP requests). 8 matches the workspace's established parallel-batch pattern.
+const enumerationWorkers = 8
 
-	var res []any
-	if err := contract.Call(opts, &res, "getNodesLength"); err != nil {
+// pubkeysBatchSize is the number of per-index getter calls packed into one
+// JSON-RPC batch request per node walk, amortizing network round-trips.
+const pubkeysBatchSize = 64
+
+// enumerateWithClient reads the Vouch pubkey set from NodeDeposit via the
+// per-index getter across all nodes. Node walks run in parallel across a bounded
+// worker pool; each node's indices are walked sequentially in JSON-RPC batches
+// until the end-of-list revert (there is no per-node length getter on the
+// contract). The context cancels all in-flight calls and the walk.
+func enumerateWithClient(ctx context.Context, rpcClient *rpc.Client, contractAddr common.Address, parsedABI abi.ABI) ([]string, int, error) {
+	res, err := callView(ctx, rpcClient, contractAddr, parsedABI, "getNodesLength")
+	if err != nil {
 		return nil, 0, fmt.Errorf("getNodesLength: %w", err)
 	}
 	if len(res) == 0 {
@@ -216,31 +235,56 @@ func enumerateWithContract(contract *bind.BoundContract) ([]string, int, error) 
 		return []string{}, 0, nil
 	}
 
-	var res2 []any
-	if err := contract.Call(opts, &res2, "getNodes", big.NewInt(0), nodesLen); err != nil {
+	res, err = callView(ctx, rpcClient, contractAddr, parsedABI, "getNodes", big.NewInt(0), nodesLen)
+	if err != nil {
 		return nil, 0, fmt.Errorf("getNodes: %w", err)
 	}
-	if len(res2) == 0 {
+	if len(res) == 0 {
 		return []string{}, 0, nil
 	}
-	nodes, _ := res2[0].([]common.Address)
+	nodes, _ := res[0].([]common.Address)
+	nodeCount := len(nodes)
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	set := make(map[string]struct{})
-	for _, node := range nodes {
-		for i := uint64(0); ; i++ {
-			var res3 []any
-			if err := contract.Call(opts, &res3, "pubkeysOfNode", node, new(big.Int).SetUint64(i)); err != nil {
-				break // out-of-range index reverts → end of this node's list
+	var mu sync.Mutex
+	jobs := make(chan common.Address)
+	var wg sync.WaitGroup
+	workers := enumerationWorkers
+	if nodeCount < workers {
+		workers = nodeCount
+	}
+	if workers < 1 {
+		workers = 1
+	}
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for node := range jobs {
+				if err := walkNodePubkeys(ctx, rpcClient, contractAddr, parsedABI, node, set, &mu); err != nil {
+					if ctx.Err() != nil {
+						return // cancelled; the producer stops sending
+					}
+				}
 			}
-			if len(res3) == 0 {
-				break
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for _, node := range nodes {
+			select {
+			case <-ctx.Done():
+				return
+			case jobs <- node:
 			}
-			pk, _ := res3[0].([]byte)
-			if len(pk) == 0 {
-				break
-			}
-			set["0x"+fmt.Sprintf("%x", pk)] = struct{}{}
 		}
+	}()
+	wg.Wait()
+	if ctx.Err() != nil {
+		return nil, nodeCount, ctx.Err()
 	}
 
 	pubkeys := make([]string, 0, len(set))
@@ -248,7 +292,92 @@ func enumerateWithContract(contract *bind.BoundContract) ([]string, int, error) 
 		pubkeys = append(pubkeys, pk)
 	}
 	sort.Strings(pubkeys)
-	return pubkeys, len(nodes), nil
+	return pubkeys, nodeCount, nil
+}
+
+// callView packs and executes a single view-function eth_call, returning the
+// unpacked outputs.
+func callView(ctx context.Context, rpcClient *rpc.Client, contractAddr common.Address, parsedABI abi.ABI, method string, args ...interface{}) ([]interface{}, error) {
+	data, err := parsedABI.Pack(method, args...)
+	if err != nil {
+		return nil, err
+	}
+	var out hexutil.Bytes
+	if err := rpcClient.CallContext(ctx, &out, "eth_call", map[string]interface{}{"to": contractAddr, "data": hexutil.Bytes(data)}, "latest"); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return parsedABI.Unpack(method, out)
+}
+
+// walkNodePubkeys walks one node's pubkey list sequentially via the per-index
+// getter, in JSON-RPC batches. The end-of-list revert (or an empty result) ends
+// the walk; any other error is a real RPC failure and is propagated.
+func walkNodePubkeys(ctx context.Context, rpcClient *rpc.Client, contractAddr common.Address, parsedABI abi.ABI, node common.Address, set map[string]struct{}, mu *sync.Mutex) error {
+	for start := uint64(0); ; start += pubkeysBatchSize {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		elems := make([]rpc.BatchElem, pubkeysBatchSize)
+		for j := range elems {
+			idx := start + uint64(j)
+			data, err := parsedABI.Pack("pubkeysOfNode", node, new(big.Int).SetUint64(idx))
+			if err != nil {
+				return err
+			}
+			var out hexutil.Bytes
+			elems[j] = rpc.BatchElem{
+				Method: "eth_call",
+				Args:   []interface{}{map[string]interface{}{"to": contractAddr, "data": hexutil.Bytes(data)}, "latest"},
+				Result: &out,
+			}
+		}
+		if err := rpcClient.BatchCallContext(ctx, elems); err != nil {
+			return fmt.Errorf("pubkeysOfNode batch (%s, %d..%d): %w", node, start, start+pubkeysBatchSize-1, err)
+		}
+
+		for j := range elems {
+			if elems[j].Error != nil {
+				if isRevertError(elems[j].Error) {
+					return nil // out-of-range index reverts → end of this node's list
+				}
+				return fmt.Errorf("pubkeysOfNode(%s, %d): %w", node, start+uint64(j), elems[j].Error)
+			}
+			out, ok := elems[j].Result.(*hexutil.Bytes)
+			if !ok || out == nil {
+				return fmt.Errorf("pubkeysOfNode(%s, %d): unexpected batch result type", node, start+uint64(j))
+			}
+			raw := *out
+			if len(raw) == 0 {
+				return nil
+			}
+			unpacked, err := parsedABI.Unpack("pubkeysOfNode", raw)
+			if err != nil {
+				return fmt.Errorf("pubkeysOfNode(%s, %d) decode: %w", node, start+uint64(j), err)
+			}
+			if len(unpacked) == 0 {
+				return nil
+			}
+			pk, _ := unpacked[0].([]byte)
+			if len(pk) == 0 {
+				return nil
+			}
+			mu.Lock()
+			set["0x"+fmt.Sprintf("%x", pk)] = struct{}{}
+			mu.Unlock()
+		}
+	}
+}
+
+// isRevertError reports whether the error is a contract revert (the end-of-list
+// signal for the per-index getter) rather than a transport/RPC failure.
+func isRevertError(err error) bool {
+	return strings.Contains(strings.ToLower(err.Error()), "revert")
 }
 
 // IsVouchPubkey reports whether the given pubkey is in the Vouch registry.
