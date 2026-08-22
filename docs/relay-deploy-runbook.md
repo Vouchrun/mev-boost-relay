@@ -302,3 +302,44 @@ These are executable gates, not review sign-off (§7.1). Run before the pilot:
 - [ ] Confirm the exact `-blocksim` and `-vouch-registry-rpc` reachability from inside the
       relay containers (`host.docker.internal` vs a shared network — depends on the compose
       network setup on this host).
+
+---
+
+## Registry warm-start (optional)
+
+The relay's enforcement predicate is **fail-open for unknown pubkeys**: until the live
+`-vouch-registry-rpc` sync has populated the registry, every validator is treated as
+external and no enforcement happens. If you want enforcement active **before the first live
+sync** (or to bootstrap offline), generate a static pubkeys file with the
+`export-vouch-pubkeys` tool and pass it via `-vouch-pubkeys-file`.
+
+**When to use it:**
+- **Enforcement active before first live sync** — the static file seeds the registry at
+  startup, so Vouch validators are enforced from boot (closes the cold-start fail-open
+  window).
+- **Offline bootstrap** — no EL RPC needed at relay runtime; the file is the only registry
+  source.
+
+**Generate the file** (run against any PulseChain EL RPC, e.g. the validation node or
+`rpc.vouch.run`):
+
+```bash
+go run ./cmd/export-vouch-pubkeys \
+  --registry-address 0x3f82615aE0C027d587FD0d04d9EaCc8f0BaCFf94 \
+  --rpc http://127.0.0.1:18546 \
+  --out /opt/mev/vouch-pubkeys.txt
+# prints: vouch pubkeys exported: <N> nodes enumerated, <M> pubkeys written to ..., elapsed ...
+```
+
+- Enumeration uses the **per-index `pubkeysOfNode(node,i)` getter across all nodes** — never
+  `getPubkeysOfNode` (quadratic memory wall, ~4,500 pubkeys at 45M gas).
+- The tool **exits non-zero and writes nothing** on any RPC failure — a partial file is
+  never produced; the operator must know the file is incomplete.
+- Output format is exactly what `-vouch-pubkeys-file` expects: one lowercase `0x`-prefixed
+  hex pubkey per line (deduped, sorted).
+
+**Ops note — the file goes stale:** validators are added (and withdrawn) continuously, so a
+static file drifts from the on-chain registry. It is a **warm-start/fallback only**; the
+live `-vouch-registry-rpc` sync is the **primary** source and refreshes every
+`-registry-refresh-interval` (default 5m). Regenerate the file whenever you need a fresh
+snapshot, and keep `-vouch-registry-rpc` configured so the live sync takes over.
