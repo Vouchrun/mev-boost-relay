@@ -8,6 +8,8 @@ enabled.
 protocol fee-recipient enforcement feature; verify every flag name against `cmd/` (api.go,
 housekeeper.go, website.go, variables.go) before running — flag names below were checked
 against the source.
+**Deployment artifacts:** the concrete compose + Caddyfile live in **`ops/relay/`**
+(`docker-compose.yml`, `Caddyfile`) — use those, not the inline skeletons below.
 
 > **Prerequisite:** the block-validation node must be synced first (see
 > `repos/builder/docs/validation-node-runbook.md`). The relay validates every builder block
@@ -18,14 +20,16 @@ against the source.
 ## 1. Prerequisites checklist
 
 - [ ] **Validation node** synced and serving `flashbots` at `http://127.0.0.1:18546`
-      (localhost-only).
-- [ ] **Beacon node (Lighthouse-Pulse)** already running on this host — the relay reuses it
-      **read-only** (SSE `head`/`payload_attributes`, `/eth/v1/beacon/...`). Confirm it
-      answers at its HTTP endpoint (default assumed `http://localhost:3500`; adjust with
-      `-beacon-uris`).
-- [ ] **DNS A-record** `boost-relay.vouch.run` → this server's public IP.
-- [ ] **TLS cert** for `boost-relay.vouch.run` (Let's Encrypt via the reverse proxy — §5).
-- [ ] **Relay signing key** — generate a BLS keypair (§3); the **public key** is embedded in
+      (localhost-only) — the `repos/builder/ops/validation-node/docker-compose.yml` stack.
+- [ ] **Beacon node (Lighthouse-Pulse)** of the validation stack running — the relay uses it
+      **read-only** (SSE `head`/`payload_attributes`, `/eth/v1/beacon/...`) at
+      `http://validation-consensus:5052` over the shared `mev-net` network.
+- [ ] **Shared docker network `mev-net` created once** (both stacks join it):
+      `docker network create mev-net`. See §2.
+- [ ] **DNS** for `boost-relay.vouch.run` pointing at this server (CNAME chain, §2.2).
+- [ ] **Router port-forward 443** → this server (§2.3).
+- [ ] **TLS cert** for `boost-relay.vouch.run` (Let's Encrypt, automatic via Caddy — §5).
+- [ ] **Relay signing key** — generate a BLS keypair (§4); the **public key** is embedded in
       the relay URL that sidecars use (`https://<pubkey>@boost-relay.vouch.run`).
 - [ ] NodeDeposit / VFD addresses (for the enforcement flags): VFD
       `0x9325008eE3B5982c10010C8f12b6CD4943F48fA6`, NodeDeposit
@@ -35,39 +39,86 @@ against the source.
 
 ---
 
-## 2. Postgres 16 + Redis 7 — minimal compose
+## 2. Network wiring
 
-```yaml
-services:
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes: [redis-data:/data]
+### 2.1 Shared docker network `mev-net`
 
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: relay
-      POSTGRES_USER: relay
-      POSTGRES_PASSWORD: ${RELAY_DB_PASSWORD}
-    volumes: [pg-data:/var/lib/postgresql/data]
+The validation node publishes its RPC to **host loopback only** (`127.0.0.1:18546`), so a
+container cannot reach it via the host. The relay stack therefore joins the **same external
+docker network** as the validation stack and reaches it by container name:
 
-volumes:
-  redis-data:
-  pg-data:
+| Endpoint | Container | Used for |
+|---|---|---|
+| `http://validation-node:18546` | validation-node | `-blocksim` (block validation) + `-vouch-registry-rpc` (registry enumeration) |
+| `http://validation-consensus:5052` | validation-consensus | `-beacon-uris` (head / payload_attributes / beacon API) |
+
+Create the network **once** before starting either stack:
+
+```bash
+docker network create mev-net
 ```
 
-Postgres DSN used by the relay (all three processes):
-`postgres://relay:${RELAY_DB_PASSWORD}@postgres:5432/relay?sslmode=disable`
+- `repos/mev-boost-relay/ops/relay/docker-compose.yml` — declares `mev-net` as
+  `external: true` and attaches every relay service to it.
+- `repos/builder/ops/validation-node/docker-compose.yml` — attaches `validation-node` and
+  `validation-consensus` to `mev-net` (the existing loopback port publishes stay, for
+  host-side `curl` checks).
+- The relay api also gets `extra_hosts: host.docker.internal:host-gateway` for **optional
+  host-loopback fallbacks** (production lighthouse `5052` / production geth `8545` on the
+  host) if the mev-net endpoints are ever unavailable.
 
-> **DB migrations** are applied by the relay itself at startup (the `database` package runs
-> the embedded migrations) — no manual schema step.
+### 2.2 DNS
+
+`boost-relay.vouch.run` must resolve to this server's public IP. The DNS chain (managed by
+the owner at the registrar/DNS provider):
+
+```
+CNAME  boost-relay.vouch.run  ->  loop.vouch.run  ->  A  <server public IP>
+```
+
+Refer to the server's public IP generically (it is not committed anywhere in this repo).
+
+### 2.3 Router
+
+Port-forward **443/tcp** (and only 443) from the router to this server. Let's Encrypt is
+served by Caddy via TLS-ALPN-01 on 443 — no port 80 is required or exposed.
+
+### 2.4 LAN split-horizon (LAN-resident pilot validators)
+
+Pilot validators that live on the same LAN as the relay should use a **split-horizon DNS**
+entry so `boost-relay.vouch.run` resolves to the relay's **LAN address** (not the public IP):
+otherwise their traffic hairpins out to the router and back. Recommended: add a LAN DNS
+record (e.g. on the local resolver) for `boost-relay.vouch.run` → the relay server's LAN IP,
+used only by LAN-resident sidecars.
 
 ---
 
-## 3. Relay signing key
+## 3. Deployment artifacts (`ops/relay/`)
+
+The concrete deployment lives in this repo at **`ops/relay/`**:
+
+- **`ops/relay/docker-compose.yml`** — Postgres 16, Redis 7, the three relay processes
+  (api + housekeeper + website, image `vouchrun/mev-boost-relay:pulse-<commit>`), and Caddy.
+  All services join `mev-net` (§2.1). Only **443** is published publicly; api (9062),
+  housekeeper (9064) and website/data (9060) are published to **host loopback only** —
+  never expose them (or 18551/8000) to the public internet.
+- **`ops/relay/Caddyfile`** — `boost-relay.vouch.run { reverse_proxy relay-api:9062 }` with
+  automatic Let's Encrypt.
+
+**Secrets** are passed via the environment (never in the compose file):
+
+| Env var | Meaning |
+|---|---|
+| `RELAY_DB_PASSWORD` | Postgres password (also used in the relay DSN) |
+| `RELAY_SECRET_KEY` | BLS secret key from §4 (32 bytes, `0x`-prefixed) |
+| `RELAY_PUBKEY` | BLS public key from §4 (used in the website's relay URL) |
+
+**DB migrations** are applied by the relay itself at startup (the `database` package runs
+the embedded migrations) — no manual schema step.
+
+---
+
+## 4. Relay signing key
 
 Run the fork's keypair generator (or use any BLS secret key generator):
 
@@ -77,8 +128,8 @@ go run ./scripts/create-bls-keypair
 # prints:  secret key: 0x...   public key: 0x...
 ```
 
-- **`secret key`** → the `-secret-key` flag for the **api** process (32 bytes, `0x`-prefixed).
-- **`public key`** → the `<pubkey>` in the relay URL given to sidecars:
+- **`secret key`** → `RELAY_SECRET_KEY` (the `-secret-key` flag for the **api** process).
+- **`public key`** → `RELAY_PUBKEY` and the `<pubkey>` in the relay URL given to sidecars:
   `https://<public_key>@boost-relay.vouch.run`. All three processes must agree on the network
   and the relay key so the website/data API match the api process.
 
@@ -86,44 +137,35 @@ Store the secret key in the environment/secret manager on the server; never in a
 
 ---
 
-## 4. Relay processes
+## 5. Relay processes + reverse proxy
 
-Run all three as containers in one compose project, sharing the network with Postgres/Redis.
-**All processes must set `SEC_PER_SLOT=10`** (PulseChain's 10s slots; upstream default is 12 —
-`common/common.go`) and `-network pulsechain` (the `pulse` branch registers
-`EthNetworkPulsechain`).
+Run the stack from `ops/relay/`:
 
-### 4.1 api (the proposer/builder/data API)
-
-```yaml
-  relay-api:
-    image: vouchrun/mev-boost-relay:pulsechain-<commit>
-    restart: unless-stopped
-    environment:
-      SEC_PER_SLOT: "10"
-    command:
-      - api
-      - -network=pulsechain
-      - -listen-addr=0.0.0.0:9062
-      - -beacon-uris=http://lighthouse-pulse:3500
-      - -redis-uri=redis:6379
-      - -db=postgres://relay:${RELAY_DB_PASSWORD}@postgres:5432/relay?sslmode=disable
-      - -secret-key=${RELAY_SECRET_KEY}
-      - -blocksim=http://host.docker.internal:18546        # the validation node (§1)
-      # protocol fee-recipient enforcement (Vouch registry predicate)
-      - -protocol-fee-recipient=0x9325008eE3B5982c10010C8f12b6CD4943F48fA6
-      - -vouch-registry-address=0x3f82615aE0C027d587FD0d04d9EaCc8f0BaCFf94
-      - -registry-refresh-interval=5m
-      - -vouch-registry-rpc=http://host.docker.internal:18546   # eth RPC for registry enumeration
-    ports:
-      - "127.0.0.1:9062:9062"   # behind the reverse proxy; not exposed publicly directly
+```bash
+cd ops/relay
+export RELAY_DB_PASSWORD=... RELAY_SECRET_KEY=... RELAY_PUBKEY=...
+docker compose up -d
 ```
 
-Flag notes (verified against `cmd/api.go`):
-- `-network=pulsechain` — required (pulse branch).
-- `-blocksim` = the **validation node** URL (default `http://localhost:8545` — you MUST
-  override it to the validation node's localhost port, `18546` in the validation runbook).
-- `-secret-key` — relay signing key from §3.
+All three processes set `SEC_PER_SLOT=10` (PulseChain's 10s slots; upstream default is 12 —
+`common/common.go`) and `-network pulsechain` (the `pulse` branch registers
+`EthNetworkPulsechain`). Flags in the compose (verified against `cmd/api.go`,
+`cmd/housekeeper.go`, `cmd/website.go`):
+
+- **api** (`relay-api`): `-listen-addr=0.0.0.0:9062`, `-beacon-uris=http://validation-consensus:5052`,
+  `-redis-uri=redis:6379`, `-db=postgres://relay:${RELAY_DB_PASSWORD}@postgres:5432/relay?sslmode=disable`,
+  `-secret-key=${RELAY_SECRET_KEY}`, `-blocksim=http://validation-node:18546`, plus the
+  enforcement flags (`-protocol-fee-recipient`, `-vouch-registry-address`,
+  `-registry-refresh-interval=5m`, `-vouch-registry-rpc=http://validation-node:18546`).
+- **housekeeper** (`relay-housekeeper`): `-listen-addr=0.0.0.0:9064` (metrics/debug),
+  `-beacon-uris=http://validation-consensus:5052`, `-redis-uri`, `-db`, `-network=pulsechain`.
+- **website** (`relay-website`): `-listen-addr=0.0.0.0:9060`, `-redis-uri`, `-db`,
+  `-relay-url=https://${RELAY_PUBKEY}@boost-relay.vouch.run`, `-link-data-api=https://boost-relay.vouch.run`.
+
+Flag notes (verified against `cmd/`):
+- `-blocksim` default is `http://localhost:8545` — the compose overrides it to the validation
+  node's container endpoint.
+- `-secret-key` — relay signing key from §4.
 - `-known-validators` — optional comma-separated pubkey seed; the api also auto-refreshes
   known validators from the beacon node at startup and per head slot.
 - `-builder-api` / `-data-api` / `-internal-api` / `-proposer-api` all default to enabled.
@@ -132,76 +174,17 @@ Flag notes (verified against `cmd/api.go`):
   `-vouch-registry-rpc`. **All default-empty = enforcement disabled** (stock upstream
   behavior); set all of them to enable the Vouch predicate. Invalid hex in the address flags
   is fatal at startup — a typo must fail the process, not a mainnet slot.
+- `-beacon-publish-uris` (api only, optional): if you want the relay to publish signed
+  blinded blocks to a different beacon endpoint than the read endpoint. Defaults to the
+  beacon-uris. Leave unset unless you have a separate publish endpoint.
 
-### 4.2 housekeeper (proposer duties, registrations, housekeeping)
-
-```yaml
-  relay-housekeeper:
-    image: vouchrun/mev-boost-relay:pulsechain-<commit>
-    restart: unless-stopped
-    environment:
-      SEC_PER_SLOT: "10"
-    command:
-      - housekeeper
-      - -network=pulsechain
-      - -beacon-uris=http://lighthouse-pulse:3500
-      - -redis-uri=redis:6379
-      - -db=postgres://relay:${RELAY_DB_PASSWORD}@postgres:5432/relay?sslmode=disable
-      - -listen-addr=0.0.0.0:9064
-```
-
-### 4.3 website (status page / bid-trace browser; optional but recommended)
-
-```yaml
-  relay-website:
-    image: vouchrun/mev-boost-relay:pulsechain-<commit>
-    restart: unless-stopped
-    environment:
-      SEC_PER_SLOT: "10"
-    command:
-      - website
-      - -network=pulsechain
-      - -listen-addr=0.0.0.0:9060
-      - -redis-uri=redis:6379
-      - -db=postgres://relay:${RELAY_DB_PASSWORD}@postgres:5432/relay?sslmode=disable
-      - -relay-url=https://${RELAY_PUBKEY}@boost-relay.vouch.run
-      - -link-data-api=https://boost-relay.vouch.run
-```
-
-Flag notes (verified against `cmd/housekeeper.go`, `cmd/website.go`): housekeeper exposes
-metrics/debug on `-listen-addr` (default `localhost:9064`); the api on 9062; the website on
-9060.
-
-> **`-beacon-publish-uris`** (api only, optional): if you want the relay to publish signed
-> blinded blocks to a different beacon endpoint than the read endpoint. Defaults to the
-> beacon-uris. Leave unset unless you have a separate publish endpoint.
-
----
-
-## 5. Reverse proxy / TLS
-
-Expose only the **api** (9062) through a reverse proxy with TLS for `boost-relay.vouch.run`
-(nginx/caddy). The relay URL format sidecars use:
+**Reverse proxy / TLS** — Caddy (`ops/relay/Caddyfile`) terminates TLS for
+`boost-relay.vouch.run` and proxies to `relay-api:9062` (container name on `mev-net`).
+Let's Encrypt is automatic (TLS-ALPN-01 on 443). The relay URL format sidecars use:
 `https://<relay_pubkey>@boost-relay.vouch.run`.
 
-```nginx
-server {
-    listen 443 ssl;
-    server_name boost-relay.vouch.run;
-    ssl_certificate     /etc/letsencrypt/live/boost-relay.vouch.run/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/boost-relay.vouch.run/privkey.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:9062;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_read_timeout 60s;
-    }
-}
-server { listen 80; server_name boost-relay.vouch.run; return 301 https://$host$request_uri; }
-```
-
-- **Never expose the validation node's RPC or the raw 9062 to the public internet.**
+- **Never expose the validation node's RPC, the raw 9062, or the website/data ports to the
+  public internet.** Only 443 is public.
 - Decide which data API endpoints are public (`/relay/v1/data/...` on the api) vs internal;
   the `-internal-api` endpoints must stay behind the proxy/internal network.
 
@@ -228,7 +211,7 @@ server { listen 80; server_name boost-relay.vouch.run; return 301 https://$host$
      `fee recipient not allowed for vouch validator`) — the enforcement predicate works;
    - a **Vouch validator with VFD recipient is accepted** (200);
    - an **external validator with any recipient is accepted** (200).
-   The enforcement is opt-in via the flags in §4.1; with all enforcement flags unset the
+   The enforcement is opt-in via the flags in §5; with all enforcement flags unset the
    relay behaves exactly like stock upstream.
 4. **Logs:** check the api logs for `using genesis fork version` (PulseChain values:
    `0x00000369` / time `1683785555`), the registry sync (`vouch registry synced` with the
@@ -294,14 +277,16 @@ These are executable gates, not review sign-off (§7.1). Run before the pilot:
 ## TODO-OPERATOR items
 
 - [ ] Confirm exact image tags for the relay fork from a committed state (no `latest`).
+      The compose pins `vouchrun/mev-boost-relay:pulse-<commit>` — update the tag when the
+      pulse branch moves.
 - [ ] Decide the public vs internal split for the data API and internal API endpoints (§5).
 - [ ] Record the §7.1 10s timing-audit measurement (p95 submission latency vs the 10s
       budget) before the pilot.
 - [ ] Establish the non-pilot control group and baseline missed-proposal rate (§7.4).
 - [ ] Run and log the Postgres backup/restore drill (§7.2).
 - [ ] Confirm the exact `-blocksim` and `-vouch-registry-rpc` reachability from inside the
-      relay containers (`host.docker.internal` vs a shared network — depends on the compose
-      network setup on this host).
+      relay containers (should be `validation-node:18546` over `mev-net`; `host.docker.internal`
+      is the optional fallback).
 
 ---
 

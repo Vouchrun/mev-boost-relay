@@ -1,0 +1,124 @@
+# Relay stack (PulseChain) — Vouchrun/mev-boost-relay fork, branch pulse
+# api + housekeeper + website + Postgres + Redis, behind Caddy (TLS, 443 only).
+#
+# Requires the external 'mev-net' network, created ONCE by the operator:
+#   docker network create mev-net
+# The validation node + beacon (repos/builder/ops/validation-node/docker-compose.yml)
+# join the same network, so the relay reaches them by container name:
+#   validation-node:18546        (EL JSON-RPC + flashbots blocksim + registry RPC)
+#   validation-consensus:5052    (beacon API)
+#
+# Secrets are passed via the environment (never in this file):
+#   RELAY_DB_PASSWORD   Postgres password (also used in the DSN)
+#   RELAY_SECRET_KEY    BLS secret key (32 bytes, 0x-prefixed) — see runbook §3
+#   RELAY_PUBKEY        BLS public key (used in the relay URL for sidecars)
+#
+# Only port 443 is published publicly (via Caddy, automatic Let's Encrypt).
+# The api (9062), housekeeper (9064) and website/data (9060) are published to
+# host loopback only — never expose them (or 18551/8000) to the public internet.
+
+name: relay-pulse
+
+networks:
+  mev-net:
+    external: true
+
+volumes:
+  redis-data:
+  pg-data:
+  caddy-data:
+  caddy-config:
+
+services:
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    networks: [mev-net]
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: relay
+      POSTGRES_USER: relay
+      POSTGRES_PASSWORD: ${RELAY_DB_PASSWORD}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    networks: [mev-net]
+
+  relay-api:
+    image: vouchrun/mev-boost-relay:pulse-f10a0ce
+    restart: unless-stopped
+    environment:
+      SEC_PER_SLOT: "10"                 # PulseChain 10s slots (default 12)
+    command:
+      - api
+      - -network=pulsechain
+      - -listen-addr=0.0.0.0:9062
+      - -beacon-uris=http://validation-consensus:5052
+      - -redis-uri=redis:6379
+      - -db=postgres://relay:${RELAY_DB_PASSWORD}@postgres:5432/relay?sslmode=disable
+      - -secret-key=${RELAY_SECRET_KEY}
+      - -blocksim=http://validation-node:18546
+      # protocol fee-recipient enforcement (Vouch registry predicate)
+      - -protocol-fee-recipient=0x9325008eE3B5982c10010C8f12b6CD4943F48fA6
+      - -vouch-registry-address=0x3f82615aE0C027d587FD0d04d9EaCc8f0BaCFf94
+      - -registry-refresh-interval=5m
+      - -vouch-registry-rpc=http://validation-node:18546
+    ports:
+      - "127.0.0.1:9062:9062"   # behind Caddy; loopback only, not public
+    extra_hosts:
+      # Optional host-loopback fallbacks (production lighthouse 5052 / geth 8545)
+      # when the shared mev-net endpoints are unavailable.
+      - "host.docker.internal:host-gateway"
+    networks: [mev-net]
+
+  relay-housekeeper:
+    image: vouchrun/mev-boost-relay:pulse-f10a0ce
+    restart: unless-stopped
+    environment:
+      SEC_PER_SLOT: "10"
+    command:
+      - housekeeper
+      - -network=pulsechain
+      - -beacon-uris=http://validation-consensus:5052
+      - -redis-uri=redis:6379
+      - -db=postgres://relay:${RELAY_DB_PASSWORD}@postgres:5432/relay?sslmode=disable
+      - -listen-addr=0.0.0.0:9064
+    ports:
+      - "127.0.0.1:9064:9064"   # metrics/debug — loopback only
+    networks: [mev-net]
+
+  relay-website:
+    image: vouchrun/mev-boost-relay:pulse-f10a0ce
+    restart: unless-stopped
+    environment:
+      SEC_PER_SLOT: "10"
+    command:
+      - website
+      - -network=pulsechain
+      - -listen-addr=0.0.0.0:9060
+      - -redis-uri=redis:6379
+      - -db=postgres://relay:${RELAY_DB_PASSWORD}@postgres:5432/relay?sslmode=disable
+      - -relay-url=https://${RELAY_PUBKEY}@boost-relay.vouch.run
+      - -link-data-api=https://boost-relay.vouch.run
+    ports:
+      - "127.0.0.1:9060:9060"   # website/data — loopback only, not public
+    networks: [mev-net]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "443:443"               # ONLY 443 public (Let's Encrypt via TLS-ALPN-01)
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - relay-api
+    networks: [mev-net]

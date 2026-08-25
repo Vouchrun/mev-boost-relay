@@ -1,0 +1,9 @@
+# Caddy reverse proxy for the relay — boost-relay.vouch.run
+#
+# Automatic Let's Encrypt via TLS-ALPN-01 on 443 (no port 80 published).
+# The relay api is reached by container name on the shared mev-net network.
+# Only the api (9062) is public; website/data stay loopback-published.
+
+boost-relay.vouch.run {
+	reverse_proxy relay-api:9062
+}
