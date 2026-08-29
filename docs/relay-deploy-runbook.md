@@ -12,7 +12,7 @@ against the source.
 (`docker-compose.yml`, `Caddyfile`) — use those, not the inline skeletons below.
 
 > **Prerequisite:** the block-validation node must be synced first (see
-> `repos/builder/docs/validation-node-runbook.md`). The relay validates every builder block
+> `repos/go-pulse-builder/docs/validation-node-runbook.md`). The relay validates every builder block
 > against it; a stale validation node means failed validations.
 
 ---
