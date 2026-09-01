@@ -1,0 +1,29 @@
+# Prometheus scrape config snippet for the MEV stack (val002 + validator hosts).
+#
+# Add these job blocks to your prometheus.yml `scrape_configs`. All scrape
+# targets are loopback-published ports on the host running Prometheus.
+#
+# The gate exporter runs in the relay compose (ops/relay) and serves the pilot
+# monitoring gates (missed proposals, relay deliveries, gas drift, fee-recipient
+# enforcement). The mev-boost sidecar exposes builder-API / relay metrics only
+# when started with the `-metrics` flag (already staged).
+
+scrape_configs:
+  # MEV gate exporter (relay host) - loopback only, port 9701
+  - job_name: "mev-gate-exporter"
+    scrape_interval: 60s
+    static_configs:
+      - targets: ["127.0.0.1:9701"]
+
+  # mev-boost sidecar (one job per validator host running the sidecar with
+  # `-metrics`; adjust the target address per host)
+  - job_name: "mev-boost-sidecar"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["127.0.0.1:18551"]
+
+  # Optional: the validation stack's own metrics (EL on 6061, beacon on 5055)
+  # - job_name: "validation-node"
+  #   scrape_interval: 60s
+  #   static_configs:
+  #     - targets: ["127.0.0.1:6061", "127.0.0.1:5055"]

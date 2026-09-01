@@ -28,6 +28,7 @@ volumes:
   pg-data:
   caddy-data:
   caddy-config:
+  gate-state:
 
 services:
 
@@ -121,4 +122,20 @@ services:
       - caddy-config:/config
     depends_on:
       - relay-api
+    networks: [mev-net]
+
+  gate-exporter:
+    image: python:3.11-alpine
+    container_name: gate-exporter
+    restart: unless-stopped
+    volumes:
+      - ../monitoring/gate_exporter.py:/exporter/gate_exporter.py:ro
+      - gate-state:/data
+    environment:
+      BEACON_API: "http://validation-consensus:5052"
+      RELAY_API: "http://relay-api:9062"
+      MEV_EXPORTER_PORT: "9700"
+    command: sh -c "python /exporter/gate_exporter.py"
+    ports:
+      - "127.0.0.1:9701:9700"   # metrics — loopback only
     networks: [mev-net]

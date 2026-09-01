@@ -222,6 +222,43 @@ Let's Encrypt is automatic (TLS-ALPN-01 on 443). The relay URL format sidecars u
 
 ---
 
+## 6.5 Monitoring (Tier 2 - MEV gate exporter)
+
+A tiny loop service (`ops/monitoring/gate_exporter.py`, stdlib-only) runs in the
+relay compose (`gate-exporter` service, loopback port **9701**) and evaluates the
+pilot monitoring gates continuously, exposing them as Prometheus metrics.
+
+**Gates it checks:**
+- `mev_missed_proposals_total` - watched validators' missed proposer duties
+  (beacon `duties/proposer` vs `beacon/blocks`; incremental slot cursor persisted
+  to the `gate-state` volume; `WATCH_PUBKEYS` file required - empty = gate disabled).
+- `mev_relay_delivered_recent` - blocks delivered via the relay's
+  `/relay/v1/data/bidtraces/proposer_payload_delivered` within a recent slot window.
+- `mev_relay_gas_drift_recent` - delivered blocks whose `gas_limit` < `GAS_LIMIT_MIN`.
+- `mev_relay_enforcement_violations_recent` - delivered blocks whose
+  `proposer_fee_recipient` != VFD.
+- `mev_watched_validators`, `mev_eval_timestamp`, `mev_eval_errors_total`,
+  `mev_exporter_up` (liveness).
+
+**Configuration (env, all optional):** `BEACON_API`, `RELAY_API`, `VFD`,
+`GAS_LIMIT_MIN` (default 44500000), `WATCH_PUBKEYS`, `MEV_EXPORTER_PORT`,
+`EVAL_MIN_INTERVAL`, `STATE_FILE`. Endpoints are read-only; all HTTP timeouts <= 6s;
+on any error the exporter keeps last-good values (only `mev_eval_errors_total`
+moves) and never crashes the HTTP server.
+
+**Prometheus scrape snippet** (`ops/monitoring/prometheus-snippet.yml`): jobs for
+the gate exporter (`127.0.0.1:9701`) and the mev-boost sidecar (`127.0.0.1:18551`;
+the sidecar must be started with `-metrics` - already staged). Optionally scrape
+the validation stack's own metrics (EL `127.0.0.1:6061`, beacon `127.0.0.1:5055`).
+
+**Daily reconciliation (val002 cron, optional):** a once-daily job can re-verify
+the gate deltas against the beacon/relay APIs directly (e.g. compare
+`mev_missed_proposals_total` against a fresh beacon-slots sweep) and page on
+divergence. **No Alertmanager is deployed** - alerts are log/CRON only until a
+Tier-3 alerting decision is made.
+
+---
+
 ## 7. Pre-pilot acceptance gates (plan §7)
 
 These are executable gates, not review sign-off (§7.1). Run before the pilot:
