@@ -57,18 +57,18 @@ services:
       SEC_PER_SLOT: "10"                 # PulseChain 10s slots (default 12)
     command:
       - api
-      - -network=pulsechain
-      - -listen-addr=0.0.0.0:9062
-      - -beacon-uris=http://validation-consensus:5052
-      - -redis-uri=redis:6379
-      - -db=postgres://relay:${RELAY_DB_PASSWORD}@postgres:5432/relay?sslmode=disable
-      - -secret-key=${RELAY_SECRET_KEY}
-      - -blocksim=http://validation-node:18546
+      - --network=pulsechain
+      - --listen-addr=0.0.0.0:9062
+      - --beacon-uris=http://validation-consensus:5052
+      - --redis-uri=redis:6379
+      - --db=postgres://relay:${RELAY_DB_PASSWORD}@postgres:5432/relay?sslmode=disable
+      - --secret-key=${RELAY_SECRET_KEY}
+      - --blocksim=http://validation-node:18546
       # protocol fee-recipient enforcement (Vouch registry predicate)
-      - -protocol-fee-recipient=0x9325008eE3B5982c10010C8f12b6CD4943F48fA6
-      - -vouch-registry-address=0x3f82615aE0C027d587FD0d04d9EaCc8f0BaCFf94
-      - -registry-refresh-interval=5m
-      - -vouch-registry-rpc=http://validation-node:18546
+      - --protocol-fee-recipient=0x9325008eE3B5982c10010C8f12b6CD4943F48fA6
+      - --vouch-registry-address=0x3f82615aE0C027d587FD0d04d9EaCc8f0BaCFf94
+      - --registry-refresh-interval=5m
+      - --vouch-registry-rpc=http://validation-node:18546
     ports:
       - "127.0.0.1:9062:9062"   # behind Caddy; loopback only, not public
     extra_hosts:
@@ -84,11 +84,11 @@ services:
       SEC_PER_SLOT: "10"
     command:
       - housekeeper
-      - -network=pulsechain
-      - -beacon-uris=http://validation-consensus:5052
-      - -redis-uri=redis:6379
-      - -db=postgres://relay:${RELAY_DB_PASSWORD}@postgres:5432/relay?sslmode=disable
-      - -listen-addr=0.0.0.0:9064
+      - --network=pulsechain
+      - --beacon-uris=http://validation-consensus:5052
+      - --redis-uri=redis:6379
+      - --db=postgres://relay:${RELAY_DB_PASSWORD}@postgres:5432/relay?sslmode=disable
+      - --listen-addr=0.0.0.0:9064
     ports:
       - "127.0.0.1:9064:9064"   # metrics/debug — loopback only
     networks: [mev-net]
@@ -100,12 +100,12 @@ services:
       SEC_PER_SLOT: "10"
     command:
       - website
-      - -network=pulsechain
-      - -listen-addr=0.0.0.0:9060
-      - -redis-uri=redis:6379
-      - -db=postgres://relay:${RELAY_DB_PASSWORD}@postgres:5432/relay?sslmode=disable
-      - -relay-url=https://${RELAY_PUBKEY}@boost-relay.vouch.run
-      - -link-data-api=https://boost-relay.vouch.run
+      - --network=pulsechain
+      - --listen-addr=0.0.0.0:9060
+      - --redis-uri=redis:6379
+      - --db=postgres://relay:${RELAY_DB_PASSWORD}@postgres:5432/relay?sslmode=disable
+      - --relay-url=https://${RELAY_PUBKEY}@boost-relay.vouch.run
+      - --link-data-api=https://boost-relay.vouch.run
     ports:
       - "127.0.0.1:9060:9060"   # website/data — loopback only, not public
     networks: [mev-net]
