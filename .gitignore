@@ -25,3 +25,7 @@
 /website-index.html
 /README.internal.md
 /internal/_investigations/
+
+# Python (ops/monitoring)
+__pycache__/
+*.pyc
