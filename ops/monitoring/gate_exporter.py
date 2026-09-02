@@ -18,7 +18,8 @@ Configuration (environment variables, all optional):
   BEACON_API        consensus client API        (default http://validation-consensus:5052)
   RELAY_API         relay api (data endpoints)  (default http://relay-api:9062)
   VFD               expected fee recipient      (default 0x9325008eE3B5982c10010C8f12b6CD4943F48fA6)
-  MEV_EXPORTER_PORT listen port                 (default 9700, loopback only)
+  MEV_EXPORTER_PORT listen port                 (default 9700)
+  MEV_EXPORTER_BIND bind host                   (default 127.0.0.1 loopback)
   WATCH_PUBKEYS     optional file of validator pubkeys (one per line) to watch
   GAS_LIMIT_MIN     minimum acceptable gas limit (default 44500000)
   EVAL_MIN_INTERVAL minimum seconds between evaluations (default 20)
@@ -42,6 +43,7 @@ BEACON_API = os.environ.get("BEACON_API", "http://validation-consensus:5052")
 RELAY_API = os.environ.get("RELAY_API", "http://relay-api:9062")
 VFD = os.environ.get("VFD", "0x9325008eE3B5982c10010C8f12b6CD4943F48fA6").lower()
 PORT = int(os.environ.get("MEV_EXPORTER_PORT", "9700"))
+BIND_HOST = os.environ.get("MEV_EXPORTER_BIND", "127.0.0.1")
 WATCH_FILE = os.environ.get("WATCH_PUBKEYS", "")
 GAS_LIMIT_MIN = int(os.environ.get("GAS_LIMIT_MIN", "44500000"))
 EVAL_MIN_INTERVAL = max(int(os.environ.get("EVAL_MIN_INTERVAL", "20")), 15)
@@ -264,7 +266,7 @@ def _render():
 
 
 def main():
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), MetricsHandler)
+    server = ThreadingHTTPServer((BIND_HOST, PORT), MetricsHandler)
     server.serve_forever()
 
 

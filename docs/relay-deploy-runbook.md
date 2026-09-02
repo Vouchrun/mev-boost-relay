@@ -245,6 +245,9 @@ pilot monitoring gates continuously, exposing them as Prometheus metrics.
 `EVAL_MIN_INTERVAL`, `STATE_FILE`. Endpoints are read-only; all HTTP timeouts <= 6s;
 on any error the exporter keeps last-good values (only `mev_eval_errors_total`
 moves) and never crashes the HTTP server.
+Note: the exporter binds `MEV_EXPORTER_BIND` inside the container (compose sets
+`0.0.0.0`); loopback-only exposure comes from the host-side publish
+`127.0.0.1:9701:9700`, not from the container bind.
 
 **Prometheus scrape snippet** (`ops/monitoring/prometheus-snippet.yml`): jobs for
 the gate exporter (`127.0.0.1:9701`) and the mev-boost sidecar (`127.0.0.1:18551`;

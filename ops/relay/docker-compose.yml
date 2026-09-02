@@ -135,6 +135,7 @@ services:
       BEACON_API: "http://validation-consensus:5052"
       RELAY_API: "http://relay-api:9062"
       MEV_EXPORTER_PORT: "9700"
+      MEV_EXPORTER_BIND: "0.0.0.0"   # bind all in the container; host-side publish below stays loopback-only
     command: sh -c "python /exporter/gate_exporter.py"
     ports:
       - "127.0.0.1:9701:9700"   # metrics — loopback only
