@@ -29,3 +29,5 @@
 # Python (ops/monitoring)
 __pycache__/
 *.pyc
+# Secrets
+.env
