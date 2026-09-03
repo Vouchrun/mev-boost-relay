@@ -67,6 +67,18 @@ docker network create mev-net
   host-loopback fallbacks** (production lighthouse `5052` / production geth `8545` on the
   host) if the mev-net endpoints are ever unavailable.
 
+**Beacon node requirement (`-beacon-uris`):** the relay's beacon node(s) must emit the
+`payload_attributes` SSE event (head tracking, duties, and the getPayload publish path all
+depend on it). A Lighthouse beacon with **no attached VC** requires
+`--always-prepare-payload` — otherwise no `payload_attributes` events are emitted and the
+relay rejects builder submissions every slot (`checkSubmissionPayloadAttrs`; upstream
+README, **"Beacon node setup"**). Also set `--prepare-payload-lookahead` for a full-slot
+build window (e.g. `10000` ms for PulseChain's 10s slots, adapted from the README's
+`12000` ms on 12s mainnet slots). On val002 the pilot colocates this role onto
+`validation-consensus` (dual role with the builder's CL); in the production multi-host
+deployment the relay operator runs a **dedicated synced Lighthouse** with these flags on
+the relay host — the production/validator beacon is **never** a `-beacon-uris` target.
+
 ### 2.2 DNS
 
 `boost-relay.vouch.run` must resolve to this server's public IP. The DNS chain (managed by
